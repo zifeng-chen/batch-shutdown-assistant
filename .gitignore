@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.db
+server/uploads/
+
+# Node
+web/node_modules/
+web/dist/
+
+# Go
+agent/LanAgent.exe
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
