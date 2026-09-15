@@ -49,15 +49,16 @@ async def heartbeat_timeout_checker():
     while True:
         await asyncio.sleep(10)
         try:
-            from datetime import timedelta
-            cutoff = now_bjt() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)
+            from datetime import timedelta, datetime as dt
+            from sqlalchemy import text
+            cutoff = (dt.now() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)).strftime('%Y-%m-%d %H:%M:%S')
             async with async_session() as db:
                 result = await db.execute(
-                    update(Device)
-                    .where(Device.status == DeviceStatus.ONLINE, Device.last_heartbeat < cutoff)
-                    .values(status=DeviceStatus.OFFLINE)
+                    text("UPDATE devices SET status = 'OFFLINE' WHERE status = 'ONLINE' AND last_heartbeat < :cutoff"),
+                    {"cutoff": cutoff}
                 )
                 if result.rowcount > 0:
+                    await db.commit()
                     logging.info(f"Heartbeat timeout: {result.rowcount} device(s) marked offline")
         except Exception as e:
             logging.error(f"Heartbeat checker error: {e}")
