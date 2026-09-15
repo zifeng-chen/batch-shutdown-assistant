@@ -25,17 +25,32 @@ Win11 家庭版 ×N (Go Agent, Windows 服务)
 
 ## 快速开始
 
-### 1. 部署管理端
+### 1. 拉取代码并部署管理端
 
 ```bash
+# 克隆项目
+git clone https://github.com/zifeng-chen/batch-shutdown-assistant.git
+cd batch-shutdown-assistant
+
+# 安装后端依赖
 cd server
 pip install -r requirements.txt
+
+# 构建前端（需要 Node.js 18+）
+cd ../web
+npm install
+npm run build    # 输出到 server/static/
+
+# 启动服务
+cd ../server
 uvicorn main:app --host 0.0.0.0 --port 8080
 ```
 
-访问 `http://服务器IP:8080`，默认账号 `admin / admin123`。
+访问 `http://服务器IP:8080`，默认账号 `admin / admin123`，登录后请立即修改密码。
 
-生产环境建议使用 systemd 守护：
+> **注意：** 管理端会自动检测宿主机局域网 IP 写入安装包，无需手动配置。更换服务器或 IP 后只需重新生成安装包即可。
+
+### 2. 生产环境部署（systemd 守护）
 
 ```ini
 # /etc/systemd/system/lanagent-server.service
@@ -45,16 +60,22 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/path/to/server
+WorkingDirectory=/path/to/batch-shutdown-assistant/server
 ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8080
 Restart=always
 RestartSec=5
+Environment=LANAGENT_SECRET=your-random-secret-key
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-### 2. 安装被管理端
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now lanagent-server
+```
+
+### 3. 安装被管理端
 
 1. 在管理端「设备管理」→「生成U盘安装包」
 2. 解压到 U 盘
@@ -63,7 +84,7 @@ WantedBy=multi-user.target
 
 > 同一个安装包可安装到任意多台设备，每台自动生成唯一标识。
 
-### 3. 编译 Agent
+### 4. 编译 Agent（开发/发版时需要）
 
 需要 Go 1.21+：
 
