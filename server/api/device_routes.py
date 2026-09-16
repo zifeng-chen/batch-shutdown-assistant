@@ -11,6 +11,7 @@ from models.models import Device, DeviceStatus, TaskResult
 from api.auth import get_current_user
 from api.audit import log_audit
 from api.websocket_manager import manager
+from config import now_bjt
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
