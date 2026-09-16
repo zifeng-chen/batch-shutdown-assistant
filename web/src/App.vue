@@ -4,6 +4,7 @@
       <div style="padding: 20px; color: #fff; font-size: 18px; font-weight: bold; text-align: center">
         LAN Agent 管理端
       </div>
+      <div style="text-align: center; color: #bfcbd9; font-size: 12px; margin-bottom: 10px">v1.2.0</div>
       <el-menu
         :default-active="$route.path"
         router
