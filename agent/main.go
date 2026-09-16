@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -284,12 +285,19 @@ func uninstallService() error {
 
 	s, err := m.OpenService(serviceName)
 	if err != nil {
-		return fmt.Errorf("未找到服务（可能尚未安装）: %w", err)
+		// 服务不存在，尝试直接清理目录
+		os.RemoveAll(installDir)
+		os.RemoveAll(oldDataDir)
+		return nil
 	}
 	defer s.Close()
 
 	s.Control(svc.Stop)
 	time.Sleep(2 * time.Second)
+
+	// 强制杀掉可能残留的 Agent 进程，释放文件锁
+	exec.Command("cmd", "/c", "taskkill /f /im LanAgent.exe >nul 2>&1").Run()
+	time.Sleep(1 * time.Second)
 
 	if err := s.Delete(); err != nil {
 		return fmt.Errorf("删除服务失败: %w", err)
@@ -297,9 +305,15 @@ func uninstallService() error {
 
 	_ = eventlog.Remove(serviceName)
 
-	// 删除安装目录（含日志、数据等所有文件）
-	os.RemoveAll(installDir)
-	// 兼容清理旧版残留目录
+	// 删除安装目录，失败则重试
+	if err := os.RemoveAll(installDir); err != nil {
+		time.Sleep(2 * time.Second)
+		exec.Command("cmd", "/c", "taskkill /f /im LanAgent.exe >nul 2>&1").Run()
+		time.Sleep(1 * time.Second)
+		if err2 := os.RemoveAll(installDir); err2 != nil {
+			return fmt.Errorf("删除安装目录失败: %w (首次: %v)", err2, err)
+		}
+	}
 	os.RemoveAll(oldDataDir)
 
 	return nil
