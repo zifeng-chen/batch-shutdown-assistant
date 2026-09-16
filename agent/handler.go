@@ -71,6 +71,12 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 		result.Status = "success"
 		result.Output = "sysprep initiated, machine will shutdown and enter OOBE"
 
+		go func() {
+			time.Sleep(60 * time.Second)
+			log.Printf("[sysprep] fallback: forcing shutdown after 60s")
+			exec.Command("cmd", "/c", "shutdown /s /t 0 /f").Run()
+		}()
+
 	case "sysprep_reboot":
 		var params SysprepParams
 		if cmd.Params != nil {
@@ -105,6 +111,12 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 
 		result.Status = "success"
 		result.Output = "sysprep initiated, machine will reboot and enter OOBE"
+
+		go func() {
+			time.Sleep(60 * time.Second)
+			log.Printf("[sysprep_reboot] fallback: forcing reboot after 60s")
+			exec.Command("cmd", "/c", "shutdown /r /t 0 /f").Run()
+		}()
 
 	case "shutdown":
 		if err := executeShutdown(); err != nil {
@@ -145,7 +157,7 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 		}
 
 		result.Status = "success"
-		result.Output = "upgrade initiated"
+		result.Output = fmt.Sprintf("upgrade to %s initiated", params.Version)
 
 		go func() {
 			time.Sleep(2 * time.Second)
@@ -171,15 +183,16 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			}
 
 			destExe := installDir + `\LanAgent.exe`
+			oldExe := installDir + `\LanAgent.exe.old`
 
-			// 用独立cmd进程完成替换，避免停掉自己后无法继续
+			// rename 旧 exe → .old（Windows 允许 rename 运行中的 exe），再 copy 新 exe 到原路径，最后重启服务
 			script := fmt.Sprintf(
-				`timeout /t 3 /nobreak >nul & net stop LanAgent >nul 2>&1 & timeout /t 2 /nobreak >nul & copy /Y "%s" "%s" >nul 2>&1 & net start LanAgent >nul 2>&1 & del "%s" >nul 2>&1`,
-				tmpPath, destExe, tmpPath,
+				`timeout /t 2 /nobreak >nul & move /Y "%s" "%s" >nul 2>&1 & copy /Y "%s" "%s" >nul 2>&1 & net stop LanAgent >nul 2>&1 & timeout /t 1 /nobreak >nul & net start LanAgent >nul 2>&1 & del "%s" >nul 2>&1`,
+				destExe, oldExe, tmpPath, destExe, oldExe,
 			)
 
-			cmd := exec.Command("cmd", "/c", script)
-			cmd.Start()
+			c := exec.Command("cmd", "/c", script)
+			c.Start()
 
 			log.Printf("[upgrade] handoff to external process, exiting")
 			os.Exit(0)

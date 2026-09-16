@@ -5,12 +5,40 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy import select, update
 
 from database import async_session
-from models.models import Device, DeviceStatus, TaskResult
+from models.models import Device, DeviceStatus, Task, TaskResult, TaskStatus
 from api.websocket_manager import manager
 from config import now_bjt
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+TERMINAL_STATUSES = {"success", "failed", "cancelled", "timeout"}
+
+
+async def _sync_parent_task(db, task_id: str):
+    """当所有子 TaskResult 都到达终态时，同步更新父 Task 状态。"""
+    results = await db.execute(
+        select(TaskResult).where(TaskResult.task_id == task_id)
+    )
+    all_results = results.scalars().all()
+    if not all_results:
+        return
+
+    statuses = {r.status for r in all_results}
+    if not statuses.issubset(TERMINAL_STATUSES):
+        return
+
+    if statuses == {"success"}:
+        final = TaskStatus.COMPLETED
+    elif "cancelled" in statuses and statuses <= {"cancelled", "success"}:
+        final = TaskStatus.CANCELLED
+    else:
+        final = TaskStatus.FAILED
+
+    await db.execute(
+        update(Task).where(Task.id == task_id).values(status=final)
+    )
+    await db.commit()
 
 
 @router.websocket("/ws/agents/{device_id}")
@@ -52,6 +80,8 @@ async def agent_websocket(websocket: WebSocket, device_id: str, token: str = Que
                         task_result.output = msg.get("output", "")
                         task_result.finished_at = now_bjt()
                         await db.commit()
+
+                        await _sync_parent_task(db, str(task_result.task_id))
 
                         await manager.broadcast_task_update(
                             str(task_result.task_id),

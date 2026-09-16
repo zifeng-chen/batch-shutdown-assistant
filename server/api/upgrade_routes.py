@@ -1,8 +1,9 @@
 import os
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from api.auth import get_current_user
 from config import BASE_DIR
@@ -10,6 +11,20 @@ from config import BASE_DIR
 router = APIRouter(prefix="/api/upgrade", tags=["upgrade"])
 
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+
+
+def _extract_version_from_exe(exe_path: str) -> str:
+    """从编译好的 exe 中提取 buildVersion 字符串"""
+    try:
+        with open(exe_path, "rb") as f:
+            data = f.read()
+        # Go ldflags -X 注入的变量在二进制中以 "build\t-ldflags=\"-X main.buildVersion=X.Y.Z\"" 形式存在
+        m = re.search(rb'buildVersion=(\d+\.\d+\.\d+)', data)
+        if m:
+            return m.group(1).decode("ascii")
+    except Exception:
+        pass
+    return ""
 
 
 @router.post("/upload")
@@ -41,19 +56,19 @@ async def download_agent_exe(filename: str):
 
 @router.get("/latest")
 async def get_latest_agent(_: dict = Depends(get_current_user)):
-    """返回服务器上最新的 Agent exe（即 agent/ 目录下编译好的版本）"""
+    """返回服务器上最新的 Agent exe 版本号（从 exe 二进制中提取）"""
     agent_path = os.path.join(os.path.dirname(BASE_DIR), "agent", "LanAgent.exe")
     if not os.path.isfile(agent_path):
         raise HTTPException(status_code=404, detail="Agent exe not found on server")
     size = os.path.getsize(agent_path)
-    version_path = os.path.join(os.path.dirname(BASE_DIR), "agent", "version.txt")
-    version = "1.1.0"
-    if os.path.isfile(version_path):
-        with open(version_path) as f:
-            v = f.read().strip()
-            if v:
-                version = v
-    return {"version": version, "size": size}
+
+    version = os.environ.get("LANAGENT_VERSION", "")
+    if not version:
+        version = _extract_version_from_exe(agent_path)
+    if not version:
+        version = "unknown"
+
+    return JSONResponse({"version": version, "size": size}, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/latest-download")

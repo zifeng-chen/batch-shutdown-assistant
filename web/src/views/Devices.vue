@@ -131,33 +131,41 @@
     </el-dialog>
 
     <!-- 推送升级 -->
-    <el-dialog v-model="showUpgrade" title="推送升级" width="600px">
+    <el-dialog v-model="showUpgrade" title="推送升级" width="650px">
       <el-form label-width="100px">
-        <el-form-item label="目标版本">
+        <el-form-item label="服务端版本">
           <el-tag size="large" type="success">v{{ upgradeVersion }}</el-tag>
         </el-form-item>
         <el-form-item label="目标设备">
           <el-radio-group v-model="upgradeTarget">
-            <el-radio value="all">所有在线设备 ({{ onlineCount }})</el-radio>
-            <el-radio value="selected">选中设备 ({{ selectedIds.length }})</el-radio>
+            <el-radio value="all">所有在线设备 ({{ upgradableAllCount }})</el-radio>
+            <el-radio value="selected">选中设备 ({{ upgradableSelectedCount }})</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item v-if="upgradeTarget === 'selected' && selectedIds.length > 0" label="选中列表">
-          <div style="max-height: 200px; overflow-y: auto; border: 1px solid #ebeef5; border-radius: 4px; padding: 8px; width: 100%">
-            <div v-for="d in selectedOnlineDevices" :key="d.id" style="padding: 4px 0; font-size: 13px">
-              <span style="font-weight: bold">{{ d.ip }}</span>
-              <span style="color: #909399; margin-left: 8px">{{ d.hostname || '-' }}</span>
-              <span style="color: #909399; margin-left: 8px">v{{ d.agent_version || '?' }}</span>
+        <el-form-item label="设备版本">
+          <div style="max-height: 250px; overflow-y: auto; border: 1px solid #ebeef5; border-radius: 4px; padding: 8px; width: 100%">
+            <div v-for="d in upgradeDeviceList" :key="d.id" style="padding: 5px 0; font-size: 13px; display: flex; align-items: center; justify-content: space-between">
+              <div>
+                <span style="font-weight: bold">{{ d.ip }}</span>
+                <span style="color: #909399; margin-left: 8px">{{ d.hostname || '-' }}</span>
+              </div>
+              <div>
+                <el-tag v-if="d.agent_version === upgradeVersion" size="small" type="info">v{{ d.agent_version || '?' }} ✓</el-tag>
+                <el-tag v-else size="small" type="warning">v{{ d.agent_version || '?' }} → v{{ upgradeVersion }}</el-tag>
+              </div>
+            </div>
+            <div v-if="upgradeDeviceList.length === 0" style="color: #909399; font-size: 12px; text-align: center; padding: 10px">
+              {{ upgradeTarget === 'selected' ? '请先在列表中勾选要升级的设备' : '没有在线设备' }}
             </div>
           </div>
         </el-form-item>
-        <el-form-item v-if="upgradeTarget === 'selected' && selectedIds.length === 0">
-          <div style="color: #f56c6c; font-size: 12px">请先在列表中勾选要升级的设备</div>
+        <el-form-item v-if="alreadyLatestCount > 0">
+          <div style="color: #67c23a; font-size: 12px">{{ alreadyLatestCount }} 台设备已是最新版本，将自动跳过</div>
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showUpgrade = false">取消</el-button>
-        <el-button type="primary" :loading="upgrading" @click="doUpgrade">推送升级</el-button>
+        <el-button type="primary" :loading="upgrading" :disabled="upgradableCount === 0" @click="doUpgrade">推送升级 ({{ upgradableCount }}台)</el-button>
       </template>
     </el-dialog>
 
@@ -228,6 +236,15 @@ const offlineDevices = computed(() => devices.value.filter(d => d.status !== 'on
 const selectedOnlineDevices = computed(() =>
   devices.value.filter(d => selectedIds.value.includes(d.id) && d.status === 'online')
 )
+
+const upgradeDeviceList = computed(() => {
+  if (upgradeTarget.value === 'selected') return selectedOnlineDevices.value
+  return onlineDevices.value
+})
+const upgradableAllCount = computed(() => onlineDevices.value.filter(d => d.agent_version !== upgradeVersion.value).length)
+const upgradableSelectedCount = computed(() => selectedOnlineDevices.value.filter(d => d.agent_version !== upgradeVersion.value).length)
+const alreadyLatestCount = computed(() => upgradeDeviceList.value.filter(d => d.agent_version === upgradeVersion.value).length)
+const upgradableCount = computed(() => upgradeDeviceList.value.filter(d => d.agent_version !== upgradeVersion.value).length)
 
 const statusLabel = (s) => ({ online: '在线', offline: '离线', recovering: '恢复中' }[s] || s)
 
@@ -374,19 +391,10 @@ const openUpgrade = async () => {
 }
 
 const doUpgrade = async () => {
-  let targetDevices
-  if (upgradeTarget.value === 'selected') {
-    if (selectedIds.value.length === 0) {
-      ElMessage.warning('请先勾选要升级的设备')
-      return
-    }
-    targetDevices = selectedOnlineDevices.value
-  } else {
-    targetDevices = devices.value.filter(d => d.status === 'online')
-  }
+  const targetDevices = upgradeDeviceList.value.filter(d => d.agent_version !== upgradeVersion.value)
 
   if (targetDevices.length === 0) {
-    ElMessage.warning('没有符合条件的在线设备')
+    ElMessage.warning('所有设备已是最新版本')
     return
   }
 

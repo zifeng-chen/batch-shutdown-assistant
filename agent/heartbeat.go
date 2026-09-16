@@ -22,10 +22,11 @@ type HeartbeatPayload struct {
 	Timestamp   int64  `json:"timestamp"`
 }
 
-var agentVersion = "1.1.1"
+// buildVersion 由编译时 -ldflags "-X main.buildVersion=x.y.z" 注入，是版本号的唯一来源
+var buildVersion = "1.3.2"
 
 func getAgentVersion() string {
-	return agentVersion
+	return buildVersion
 }
 
 func getHostname() string {

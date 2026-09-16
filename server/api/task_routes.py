@@ -6,13 +6,15 @@ from config import now_bjt
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from database import get_db
 from models.models import Device, Task, TaskResult, TaskType, TaskStatus, DeviceStatus
 from api.websocket_manager import manager
 from api.auth import get_current_user
 from api.audit import log_audit
+
+UPGRADE_TIMEOUT_SECONDS = 300
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -121,6 +123,20 @@ async def get_task(
         select(TaskResult).where(TaskResult.task_id == task_id)
     )
     task_results = results.scalars().all()
+
+    # upgrade 任务超时兜底：超过 5 分钟仍在 running/sent 则标记为 timeout
+    if task.task_type == TaskType.UPGRADE and task.status == TaskStatus.RUNNING:
+        cutoff = now_bjt() - timedelta(seconds=UPGRADE_TIMEOUT_SECONDS)
+        timed_out = False
+        for tr in task_results:
+            if tr.status in ("sent", "pending") and tr.started_at and tr.started_at < cutoff:
+                tr.status = "timeout"
+                tr.output = "upgrade timed out (agent did not report back)"
+                tr.finished_at = now_bjt()
+                timed_out = True
+        if timed_out:
+            task.status = TaskStatus.FAILED
+            await db.commit()
 
     return {
         "id": task.id,

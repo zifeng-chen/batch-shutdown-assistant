@@ -4,7 +4,7 @@
       <div style="padding: 20px; color: #fff; font-size: 18px; font-weight: bold; text-align: center">
         LAN Agent 管理端
       </div>
-      <div style="text-align: center; color: #bfcbd9; font-size: 12px; margin-bottom: 10px">v1.2.0</div>
+      <div style="text-align: center; color: #bfcbd9; font-size: 12px; margin-bottom: 10px">v{{ appVersion }}</div>
       <el-menu
         :default-active="$route.path"
         router
@@ -54,15 +54,26 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { authApi } from './api'
 import { ElMessage } from 'element-plus'
+import axios from 'axios'
 
 const router = useRouter()
 const showPwd = ref(false)
 const pwdLoading = ref(false)
 const pwdForm = ref({ old_password: '', new_password: '', confirm: '' })
+const appVersion = ref('...')
+
+onMounted(async () => {
+  try {
+    const res = await axios.get('/api/upgrade/latest', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+    appVersion.value = res.data.version || '...'
+  } catch { appVersion.value = '?' }
+})
 
 const logout = () => {
   localStorage.removeItem('token')
