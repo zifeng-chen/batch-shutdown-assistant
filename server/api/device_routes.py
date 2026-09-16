@@ -53,7 +53,7 @@ async def list_devices(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    query = select(Device)
+    query = select(Device).where(Device.deleted_at.is_(None))
 
     if status:
         query = query.where(Device.status == status)
@@ -109,12 +109,13 @@ async def device_stats(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
-    total = await db.execute(select(func.count(Device.id)))
+    active = Device.deleted_at.is_(None)
+    total = await db.execute(select(func.count(Device.id)).where(active))
     online = await db.execute(
-        select(func.count(Device.id)).where(Device.status == DeviceStatus.ONLINE)
+        select(func.count(Device.id)).where(active, Device.status == DeviceStatus.ONLINE)
     )
     offline = await db.execute(
-        select(func.count(Device.id)).where(Device.status == DeviceStatus.OFFLINE)
+        select(func.count(Device.id)).where(active, Device.status == DeviceStatus.OFFLINE)
     )
     return {
         "total": total.scalar(),
@@ -167,8 +168,8 @@ async def delete_device(
         cmd = {"id": str(_uuid.uuid4()), "action": "uninstall", "params": {}}
         uninstalled = await manager.send_command(device_id, cmd)
 
-    await db.execute(sql_delete(TaskResult).where(TaskResult.device_id == device_id))
-    await db.delete(device)
+    device.deleted_at = now_bjt()
+    device.status = DeviceStatus.OFFLINE
     await db.commit()
 
     await log_audit(db, "device_delete", current_user["username"],
@@ -203,10 +204,10 @@ async def batch_delete_devices(
             if await manager.send_command(device.id, cmd):
                 uninstall_count += 1
 
-    await db.execute(sql_delete(TaskResult).where(TaskResult.device_id.in_(payload.device_ids)))
     deleted = 0
     for device in devices:
-        await db.delete(device)
+        device.deleted_at = now_bjt()
+        device.status = DeviceStatus.OFFLINE
         deleted += 1
     await db.commit()
 

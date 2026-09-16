@@ -51,9 +51,17 @@ async def agent_heartbeat(payload: HeartbeatRequest, request: Request, db: Async
         result = await db.execute(
             select(Device).where(Device.ip == payload.ip)
         )
-        device = result.scalar_one_or_none()
+        ip_device = result.scalar_one_or_none()
+        # 如果该IP对应的设备已被软删除，不自动重新注册
+        if ip_device and ip_device.deleted_at is not None:
+            return {"device_id": ip_device.id, "status": "deleted"}
+        device = ip_device
 
     if device:
+        # 已软删除的设备不接受心跳，不自动恢复
+        if device.deleted_at is not None:
+            return {"device_id": device.id, "status": "deleted"}
+
         device.hostname = payload.hostname
         device.os_info = payload.os
         device.ip = payload.ip

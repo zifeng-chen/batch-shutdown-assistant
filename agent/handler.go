@@ -250,7 +250,13 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 		result.Output = "uninstall initiated"
 		go func() {
 			time.Sleep(2 * time.Second)
-			exec.Command("cmd", "/c", `"`+installDir+`\LanAgent.exe"`, "/uninstall").Run()
+
+			// 用独立 cmd 脚本执行完整卸载：停服务→删服务→删目录，避免依赖 exe 自身参数
+			script := fmt.Sprintf(
+				`net stop LanAgent >nul 2>&1 & sc delete LanAgent >nul 2>&1 & timeout /t 1 /nobreak >nul & rmdir /s /q "%s" >nul 2>&1`,
+				installDir,
+			)
+			exec.Command("cmd", "/c", script).Run()
 			os.Exit(0)
 		}()
 
