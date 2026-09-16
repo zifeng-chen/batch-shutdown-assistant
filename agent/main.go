@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -302,12 +301,8 @@ func uninstallService() error {
 
 	fmt.Println("正在停止服务...")
 	s.Control(svc.Stop)
-	time.Sleep(2 * time.Second)
-
-	// 强制杀掉可能残留的 Agent 进程，释放文件锁
-	fmt.Println("正在终止 Agent 进程...")
-	exec.Command("cmd", "/c", "taskkill /f /im LanAgent.exe >nul 2>&1").Run()
-	time.Sleep(1 * time.Second)
+	// 等待服务进程完全退出（不能用 taskkill，会杀掉当前进程自己）
+	time.Sleep(5 * time.Second)
 
 	fmt.Println("正在删除服务注册...")
 	if err := s.Delete(); err != nil {
@@ -319,10 +314,8 @@ func uninstallService() error {
 	// 删除安装目录，失败则重试
 	fmt.Printf("正在删除安装目录: %s\n", installDir)
 	if err := os.RemoveAll(installDir); err != nil {
-		fmt.Printf("首次删除失败(%v)，重试...\n", err)
-		time.Sleep(2 * time.Second)
-		exec.Command("cmd", "/c", "taskkill /f /im LanAgent.exe >nul 2>&1").Run()
-		time.Sleep(1 * time.Second)
+		fmt.Printf("首次删除失败(%v)，等待后重试...\n", err)
+		time.Sleep(3 * time.Second)
 		if err2 := os.RemoveAll(installDir); err2 != nil {
 			return fmt.Errorf("删除安装目录失败: %w (首次: %v)", err2, err)
 		}
