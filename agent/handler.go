@@ -269,10 +269,10 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 		go func() {
 			time.Sleep(2 * time.Second)
 
-			// 用独立 cmd 脚本执行完整卸载：杀进程→停服务→删服务→删目录
+			// 用独立 cmd 脚本执行完整卸载：杀进程→停服务→删服务→删目录（含重试）
 			script := fmt.Sprintf(
-				`taskkill /f /im LanAgent.exe >nul 2>&1 & net stop LanAgent >nul 2>&1 & sc delete LanAgent >nul 2>&1 & timeout /t 2 /nobreak >nul & rmdir /s /q "%s" >nul 2>&1`,
-				installDir,
+				`taskkill /f /im LanAgent.exe >nul 2>&1 & net stop LanAgent >nul 2>&1 & sc delete LanAgent >nul 2>&1 & timeout /t 2 /nobreak >nul & rmdir /s /q "%s" >nul 2>&1 & if exist "%s" (timeout /t 2 /nobreak >nul & taskkill /f /im LanAgent.exe >nul 2>&1 & rmdir /s /q "%s" >nul 2>&1)`,
+				installDir, installDir, installDir,
 			)
 			exec.Command("cmd", "/c", script).Run()
 			os.Exit(0)
