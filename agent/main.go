@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -301,8 +302,7 @@ func uninstallService() error {
 
 	fmt.Println("正在停止服务...")
 	s.Control(svc.Stop)
-	// 等待服务进程完全退出（不能用 taskkill，会杀掉当前进程自己）
-	time.Sleep(5 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	fmt.Println("正在删除服务注册...")
 	if err := s.Delete(); err != nil {
@@ -311,18 +311,32 @@ func uninstallService() error {
 
 	_ = eventlog.Remove(serviceName)
 
-	// 删除安装目录，失败则重试
-	fmt.Printf("正在删除安装目录: %s\n", installDir)
-	if err := os.RemoveAll(installDir); err != nil {
-		fmt.Printf("首次删除失败(%v)，等待后重试...\n", err)
-		time.Sleep(3 * time.Second)
-		if err2 := os.RemoveAll(installDir); err2 != nil {
-			return fmt.Errorf("删除安装目录失败: %w (首次: %v)", err2, err)
-		}
+	// 用独立 cmd 脚本删除目录：当前进程退出后由脚本完成删除，避免 exe 被自身占用
+	fmt.Printf("正在清理安装目录: %s\n", installDir)
+	batPath := filepath.Join(os.TempDir(), "lanagent_uninstall.bat")
+	batContent := fmt.Sprintf(
+		`@echo off`+"\r\n"+
+			`ping 127.0.0.1 -n 3 >nul`+"\r\n"+ // 等当前进程退出
+			`taskkill /f /im LanAgent.exe >nul 2>&1`+"\r\n"+
+			`ping 127.0.0.1 -n 2 >nul`+"\r\n"+
+			`rmdir /s /q "%s" >nul 2>&1`+"\r\n"+
+			`if exist "%s" (`+"\r\n"+
+			`  ping 127.0.0.1 -n 3 >nul`+"\r\n"+
+			`  taskkill /f /im LanAgent.exe >nul 2>&1`+"\r\n"+
+			`  rmdir /s /q "%s" >nul 2>&1`+"\r\n"+
+			`)`+"\r\n"+
+			`rmdir /s /q "%s" >nul 2>&1`+"\r\n"+ // 清理旧数据目录
+			`del "%s" >nul 2>&1`+"\r\n", // 删除自身 bat
+		installDir, installDir, installDir, oldDataDir, batPath,
+	)
+	if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
+		return fmt.Errorf("创建卸载脚本失败: %w", err)
 	}
-	os.RemoveAll(oldDataDir)
 
-	fmt.Println("卸载完成。")
+	cmd := exec.Command("cmd", "/c", batPath)
+	cmd.Start()
+
+	fmt.Println("LAN Agent 已卸载成功。")
 	return nil
 }
 
