@@ -185,16 +185,34 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			destExe := installDir + `\LanAgent.exe`
 			oldExe := installDir + `\LanAgent.exe.old`
 
-			// rename 旧 exe → .old（Windows 允许 rename 运行中的 exe），再 copy 新 exe 到原路径，最后重启服务
-			script := fmt.Sprintf(
-				`timeout /t 2 /nobreak >nul & move /Y "%s" "%s" >nul 2>&1 & copy /Y "%s" "%s" >nul 2>&1 & net stop LanAgent >nul 2>&1 & timeout /t 1 /nobreak >nul & net start LanAgent >nul 2>&1 & del "%s" >nul 2>&1`,
+			// 用 schtasks 创建一次性延迟任务，独立完成替换+重启，摆脱服务 recovery 干扰
+			// 任务延迟 3 秒启动，此时 Agent 已退出，可安全替换 exe
+			batPath := filepath.Join(os.TempDir(), "lanagent_upgrade.bat")
+			batContent := fmt.Sprintf(
+				`@echo off`+"\r\n"+
+					`ping 127.0.0.1 -n 3 >nul`+"\r\n"+ // 等3秒
+					`move /Y "%s" "%s" >nul 2>&1`+"\r\n"+ // rename 旧 exe
+					`copy /Y "%s" "%s" >nul 2>&1`+"\r\n"+ // copy 新 exe 到原路径
+					`sc stop LanAgent >nul 2>&1`+"\r\n"+
+					`ping 127.0.0.1 -n 2 >nul`+"\r\n"+ // 等1秒
+					`sc start LanAgent >nul 2>&1`+"\r\n"+
+					`del "%s" >nul 2>&1`+"\r\n", // 删 .old
 				destExe, oldExe, tmpPath, destExe, oldExe,
 			)
+			if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
+				log.Printf("[upgrade] write bat failed: %v", err)
+				return
+			}
 
-			c := exec.Command("cmd", "/c", script)
+			// schtasks 在 Agent 退出后独立执行 bat，避免服务 recovery 抢占
+			taskCmd := fmt.Sprintf(
+				`schtasks /create /tn "LanAgentUpgrade" /tr "%s" /sc once /st 00:00 /f >nul 2>&1 & schtasks /run /tn "LanAgentUpgrade" >nul 2>&1 & timeout /t 3 /nobreak >nul & schtasks /delete /tn "LanAgentUpgrade" /f >nul 2>&1`,
+				batPath,
+			)
+			c := exec.Command("cmd", "/c", taskCmd)
 			c.Start()
 
-			log.Printf("[upgrade] handoff to external process, exiting")
+			log.Printf("[upgrade] handoff to scheduled task, exiting")
 			os.Exit(0)
 		}()
 
