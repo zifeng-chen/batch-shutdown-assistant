@@ -124,7 +124,7 @@ func startHeartbeat(cfg *Config, stopCh <-chan struct{}) {
 }
 
 func checkAndRecover(cfg *Config) {
-	recoverFlag := `C:\LanAgent\need_recover`
+	recoverFlag := dataDir + `\need_recover`
 	if _, err := os.Stat(recoverFlag); os.IsNotExist(err) {
 		return
 	}

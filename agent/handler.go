@@ -170,7 +170,7 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 				return
 			}
 
-			destExe := `C:\Program Files\LanAgent\LanAgent.exe`
+			destExe := installDir + `\LanAgent.exe`
 
 			// 用独立cmd进程完成替换，避免停掉自己后无法继续
 			script := fmt.Sprintf(
@@ -202,7 +202,7 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 
 		destDir := params.DestDir
 		if destDir == "" {
-			destDir = `C:\LanAgent\files`
+			destDir = filesDir
 		}
 		_ = os.MkdirAll(destDir, 0755)
 		destPath := filepath.Join(destDir, params.Filename)
@@ -237,7 +237,7 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 		result.Output = "uninstall initiated"
 		go func() {
 			time.Sleep(2 * time.Second)
-			exec.Command("cmd", "/c", `"C:\Program Files\LanAgent\LanAgent.exe"`, "/uninstall").Run()
+			exec.Command("cmd", "/c", `"`+installDir+`\LanAgent.exe"`, "/uninstall").Run()
 			os.Exit(0)
 		}()
 
@@ -327,7 +327,7 @@ func writeSetupCompleteScript(cfg *Config) error {
 		"net start LanAgent\r\n" +
 		`reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 0 /f` + "\r\n"
 
-	logDir := `C:\LanAgent`
+	logDir := logsDir
 	_ = os.MkdirAll(logDir, 0755)
 
 	recoverFlag := filepath.Join(logDir, "need_recover")

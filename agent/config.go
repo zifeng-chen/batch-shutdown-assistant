@@ -13,6 +13,12 @@ import (
 
 const configFileName = "config.json"
 
+const installDir = `C:\Program Files\LanAgent`
+const logsDir = `C:\Program Files\LanAgent\logs`
+const dataDir = `C:\Program Files\LanAgent\data`
+const filesDir = `C:\Program Files\LanAgent\data\files`
+const oldDataDir = `C:\LanAgent`
+
 type Config struct {
 	ServerURL  string `json:"server_url"`
 	Token      string `json:"token"`
@@ -116,4 +122,29 @@ func DecryptToken(encoded string) (string, error) {
 	}
 
 	return string(plaintext), nil
+}
+
+func migrateOldData() {
+	if _, err := os.Stat(oldDataDir); os.IsNotExist(err) {
+		return
+	}
+
+	os.MkdirAll(dataDir, 0755)
+	os.MkdirAll(logsDir, 0755)
+
+	entries, err := os.ReadDir(oldDataDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		src := oldDataDir + `\` + entry.Name()
+		dst := dataDir + `\` + entry.Name()
+		if entry.Name() == "setup.log" || entry.Name() == "agent.log" {
+			dst = logsDir + `\` + entry.Name()
+		}
+		os.Rename(src, dst)
+	}
+
+	os.RemoveAll(oldDataDir)
 }

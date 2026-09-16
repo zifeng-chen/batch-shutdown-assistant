@@ -31,6 +31,8 @@ type AgentService struct {
 func (s *AgentService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	changes <- svc.Status{State: svc.StartPending}
 
+	migrateOldData()
+
 	cfg, err := LoadConfig()
 	if err != nil {
 		log.Printf("[service] load config failed: %v", err)
@@ -198,7 +200,6 @@ func installService(serverURL, token string) error {
 		return fmt.Errorf("获取程序路径失败: %w", err)
 	}
 
-	installDir := `C:\Program Files\LanAgent`
 	_ = os.MkdirAll(installDir, 0755)
 	destExe := filepath.Join(installDir, "LanAgent.exe")
 	destCfg := filepath.Join(installDir, configFileName)
@@ -298,11 +299,10 @@ func uninstallService() error {
 
 	_ = eventlog.Remove(serviceName)
 
-	// 删除安装目录和日志目录
-	installDir := `C:\Program Files\LanAgent`
-	logDir := `C:\LanAgent`
+	// 删除安装目录（含日志、数据等所有文件）
 	os.RemoveAll(installDir)
-	os.RemoveAll(logDir)
+	// 兼容清理旧版残留目录
+	os.RemoveAll(oldDataDir)
 
 	return nil
 }
