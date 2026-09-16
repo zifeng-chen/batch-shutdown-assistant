@@ -186,12 +186,17 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			oldExe := installDir + `\LanAgent.exe.old`
 
 			// 在退出前先清空服务 recovery 配置，防止 os.Exit 后 recovery 抢先重启旧 exe
-			exec.Command("cmd", "/c", `sc failure LanAgent reset= 0 actions= "" >nul 2>&1`).Run()
+			if out, err := exec.Command("cmd", "/c", `sc failure LanAgent reset= 0 actions= ""`).CombinedOutput(); err != nil {
+				log.Printf("[upgrade] clear recovery failed: %v, output: %s", err, string(out))
+			} else {
+				log.Printf("[upgrade] recovery cleared successfully")
+			}
 
 			// 用 schtasks 创建一次性延迟任务，独立完成替换+重启
 			batPath := filepath.Join(os.TempDir(), "lanagent_upgrade.bat")
 			batContent := fmt.Sprintf(
 				`@echo off`+"\r\n"+
+					`sc failure LanAgent reset= 0 actions= "" >nul 2>&1`+"\r\n"+ // 双重保险：再次清空 recovery
 					`sc stop LanAgent >nul 2>&1`+"\r\n"+ // 停服务，释放 exe 占用
 					`ping 127.0.0.1 -n 3 >nul`+"\r\n"+ // 等服务完全停止
 					`move /Y "%s" "%s" >nul 2>&1`+"\r\n"+ // rename 旧 exe
