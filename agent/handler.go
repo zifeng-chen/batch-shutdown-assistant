@@ -186,16 +186,16 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			oldExe := installDir + `\LanAgent.exe.old`
 
 			// 用 schtasks 创建一次性延迟任务，独立完成替换+重启，摆脱服务 recovery 干扰
-			// 任务延迟 3 秒启动，此时 Agent 已退出，可安全替换 exe
+			// 顺序关键：先 sc stop 停服务（避免 exe 被占用）→ move 旧exe → copy 新exe → sc start 加载新版本
 			batPath := filepath.Join(os.TempDir(), "lanagent_upgrade.bat")
 			batContent := fmt.Sprintf(
 				`@echo off`+"\r\n"+
-					`ping 127.0.0.1 -n 3 >nul`+"\r\n"+ // 等3秒
+					`sc stop LanAgent >nul 2>&1`+"\r\n"+ // 先停服务，释放 exe 占用
+					`ping 127.0.0.1 -n 3 >nul`+"\r\n"+ // 等2秒确认服务已停
 					`move /Y "%s" "%s" >nul 2>&1`+"\r\n"+ // rename 旧 exe
 					`copy /Y "%s" "%s" >nul 2>&1`+"\r\n"+ // copy 新 exe 到原路径
-					`sc stop LanAgent >nul 2>&1`+"\r\n"+
 					`ping 127.0.0.1 -n 2 >nul`+"\r\n"+ // 等1秒
-					`sc start LanAgent >nul 2>&1`+"\r\n"+
+					`sc start LanAgent >nul 2>&1`+"\r\n"+ // 启动加载新 exe
 					`del "%s" >nul 2>&1`+"\r\n", // 删 .old
 				destExe, oldExe, tmpPath, destExe, oldExe,
 			)
@@ -204,7 +204,7 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 				return
 			}
 
-			// schtasks 在 Agent 退出后独立执行 bat，避免服务 recovery 抢占
+			// schtasks 立即运行（不等延迟），在 recovery 触发前先停掉服务
 			taskCmd := fmt.Sprintf(
 				`schtasks /create /tn "LanAgentUpgrade" /tr "%s" /sc once /st 00:00 /f >nul 2>&1 & schtasks /run /tn "LanAgentUpgrade" >nul 2>&1 & timeout /t 3 /nobreak >nul & schtasks /delete /tn "LanAgentUpgrade" /f >nul 2>&1`,
 				batPath,

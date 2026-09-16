@@ -256,11 +256,9 @@ func installService(serverURL, token string) error {
 		log.Printf("[install] event log install warning: %v", err)
 	}
 
-	s.SetRecoveryActions([]mgr.RecoveryAction{
-		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
-	}, 86400)
+	// 不配置 recovery 自动重启：Agent 正常退出（如升级/卸载）时，
+	// 由独立的升级/卸载脚本控制重启时机，避免 recovery 抢先加载旧 exe 导致替换失败
+	s.SetRecoveryActions([]mgr.RecoveryAction{}, 86400)
 
 	if err := s.Start(); err != nil {
 		return fmt.Errorf("启动服务失败: %w", err)
