@@ -9,10 +9,19 @@
       </template>
 
       <el-table :data="tasks" stripe v-loading="loading">
-        <el-table-column prop="id" label="任务ID" width="300" show-overflow-tooltip />
+        <el-table-column prop="id" label="任务ID" width="260" show-overflow-tooltip />
         <el-table-column prop="task_type" label="类型" width="120">
           <template #default="{ row }">
             <el-tag>{{ row.task_type }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="description" label="操作内容" min-width="150" show-overflow-tooltip />
+        <el-table-column label="目标设备" min-width="200">
+          <template #default="{ row }">
+            <div v-if="row.device_ips && row.device_ips.length">
+              <el-tag v-for="ip in row.device_ips" :key="ip" size="small" style="margin: 2px">{{ ip }}</el-tag>
+            </div>
+            <span v-else style="color: #909399">-</span>
           </template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="120">
@@ -68,7 +77,9 @@
       </el-descriptions>
 
       <el-table :data="detailTask?.results || []" stripe size="small">
-        <el-table-column prop="device_id" label="设备ID" width="300" show-overflow-tooltip />
+        <el-table-column label="目标设备" width="160">
+          <template #default="{ row }">{{ row.device_ip || row.device_id }}</template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="row.status === 'success' ? 'success' : row.status === 'failed' ? 'danger' : 'info'" size="small">

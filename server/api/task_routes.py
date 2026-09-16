@@ -105,7 +105,46 @@ async def list_tasks(
         select(Task).order_by(Task.created_at.desc()).limit(100)
     )
     tasks = result.scalars().all()
-    return tasks
+
+    task_list = []
+    for t in tasks:
+        results = await db.execute(
+            select(TaskResult).where(TaskResult.task_id == t.id)
+        )
+        task_results = results.scalars().all()
+
+        device_ips = []
+        for tr in task_results:
+            dev_result = await db.execute(
+                select(Device.ip).where(Device.id == tr.device_id)
+            )
+            dev = dev_result.scalar_one_or_none()
+            if dev:
+                device_ips.append(dev)
+
+        # 构造操作描述
+        desc = ""
+        params = json.loads(t.params) if t.params else {}
+        if t.task_type == TaskType.UPGRADE:
+            ver = params.get("version", "?")
+            desc = f"升级到 v{ver}"
+        elif t.task_type == TaskType.SYSPREP:
+            desc = "Sysprep 关机"
+        elif t.task_type == TaskType.SYSPREP_REBOOT:
+            desc = "Sysprep 重启"
+        else:
+            desc = str(t.task_type)
+
+        task_list.append({
+            "id": t.id,
+            "task_type": t.task_type.value if hasattr(t.task_type, 'value') else str(t.task_type),
+            "status": t.status.value if hasattr(t.status, 'value') else str(t.status),
+            "description": desc,
+            "device_ips": device_ips,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        })
+
+    return task_list
 
 
 @router.get("/{task_id}")
@@ -138,23 +177,30 @@ async def get_task(
             task.status = TaskStatus.FAILED
             await db.commit()
 
+    # 查询每个结果对应的设备IP
+    results_with_ip = []
+    for r in task_results:
+        dev_result = await db.execute(
+            select(Device.ip).where(Device.id == r.device_id)
+        )
+        dev_ip = dev_result.scalar_one_or_none()
+        results_with_ip.append({
+            "id": r.id,
+            "device_id": r.device_id,
+            "device_ip": dev_ip or r.device_id,
+            "status": r.status,
+            "output": r.output,
+            "started_at": r.started_at,
+            "finished_at": r.finished_at,
+        })
+
     return {
         "id": task.id,
         "task_type": task.task_type,
         "status": task.status,
         "params": task.params,
         "created_at": task.created_at,
-        "results": [
-            {
-                "id": r.id,
-                "device_id": r.device_id,
-                "status": r.status,
-                "output": r.output,
-                "started_at": r.started_at,
-                "finished_at": r.finished_at,
-            }
-            for r in task_results
-        ],
+        "results": results_with_ip,
     }
 
 

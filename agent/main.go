@@ -311,30 +311,28 @@ func uninstallService() error {
 
 	_ = eventlog.Remove(serviceName)
 
-	// 用独立 cmd 脚本删除目录：当前进程退出后由脚本完成删除，避免 exe 被自身占用
+	// 用 schtasks 创建一次性任务删除目录：当前进程退出后由系统调度器执行，确保文件锁已释放
 	fmt.Printf("正在清理安装目录: %s\n", installDir)
 	batPath := filepath.Join(os.TempDir(), "lanagent_uninstall.bat")
 	batContent := fmt.Sprintf(
-		`@echo off`+"\r\n"+
-			`ping 127.0.0.1 -n 3 >nul`+"\r\n"+ // 等当前进程退出
-			`taskkill /f /im LanAgent.exe >nul 2>&1`+"\r\n"+
-			`ping 127.0.0.1 -n 2 >nul`+"\r\n"+
-			`rmdir /s /q "%s" >nul 2>&1`+"\r\n"+
-			`if exist "%s" (`+"\r\n"+
-			`  ping 127.0.0.1 -n 3 >nul`+"\r\n"+
-			`  taskkill /f /im LanAgent.exe >nul 2>&1`+"\r\n"+
-			`  rmdir /s /q "%s" >nul 2>&1`+"\r\n"+
-			`)`+"\r\n"+
-			`rmdir /s /q "%s" >nul 2>&1`+"\r\n"+ // 清理旧数据目录
-			`del "%s" >nul 2>&1`+"\r\n", // 删除自身 bat
-		installDir, installDir, installDir, oldDataDir, batPath,
+		"@echo off\r\n"+
+			"taskkill /f /im LanAgent.exe >nul 2>&1\r\n"+
+			"ping 127.0.0.1 -n 3 >nul\r\n"+
+			"rmdir /s /q \"%s\" >nul 2>&1\r\n"+
+			"rmdir /s /q \"%s\" >nul 2>&1\r\n"+
+			"schtasks /delete /tn \"LanAgentUninstall\" /f >nul 2>&1\r\n"+
+			"del \"%s\" >nul 2>&1\r\n",
+		installDir, oldDataDir, batPath,
 	)
 	if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
 		return fmt.Errorf("创建卸载脚本失败: %w", err)
 	}
 
-	cmd := exec.Command("cmd", "/c", batPath)
-	cmd.Start()
+	taskCmd := fmt.Sprintf(
+		`schtasks /create /tn "LanAgentUninstall" /tr "%s" /sc once /st 00:00 /f >nul 2>&1 & schtasks /run /tn "LanAgentUninstall" >nul 2>&1`,
+		batPath,
+	)
+	exec.Command("cmd", "/c", taskCmd).Run()
 
 	fmt.Println("LAN Agent 已卸载成功。")
 	return nil
