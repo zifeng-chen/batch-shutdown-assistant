@@ -185,16 +185,18 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			destExe := installDir + `\LanAgent.exe`
 			oldExe := installDir + `\LanAgent.exe.old`
 
-			// 用 schtasks 创建一次性延迟任务，独立完成替换+重启，摆脱服务 recovery 干扰
-			// 顺序关键：先 sc stop 停服务（避免 exe 被占用）→ move 旧exe → copy 新exe → sc start 加载新版本
+			// 在退出前先清空服务 recovery 配置，防止 os.Exit 后 recovery 抢先重启旧 exe
+			exec.Command("cmd", "/c", `sc failure LanAgent reset= 0 actions= "" >nul 2>&1`).Run()
+
+			// 用 schtasks 创建一次性延迟任务，独立完成替换+重启
 			batPath := filepath.Join(os.TempDir(), "lanagent_upgrade.bat")
 			batContent := fmt.Sprintf(
 				`@echo off`+"\r\n"+
-					`sc stop LanAgent >nul 2>&1`+"\r\n"+ // 先停服务，释放 exe 占用
-					`ping 127.0.0.1 -n 3 >nul`+"\r\n"+ // 等2秒确认服务已停
+					`sc stop LanAgent >nul 2>&1`+"\r\n"+ // 停服务，释放 exe 占用
+					`ping 127.0.0.1 -n 3 >nul`+"\r\n"+ // 等服务完全停止
 					`move /Y "%s" "%s" >nul 2>&1`+"\r\n"+ // rename 旧 exe
 					`copy /Y "%s" "%s" >nul 2>&1`+"\r\n"+ // copy 新 exe 到原路径
-					`ping 127.0.0.1 -n 2 >nul`+"\r\n"+ // 等1秒
+					`ping 127.0.0.1 -n 2 >nul`+"\r\n"+
 					`sc start LanAgent >nul 2>&1`+"\r\n"+ // 启动加载新 exe
 					`del "%s" >nul 2>&1`+"\r\n", // 删 .old
 				destExe, oldExe, tmpPath, destExe, oldExe,
