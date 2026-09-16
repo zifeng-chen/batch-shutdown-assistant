@@ -277,28 +277,39 @@ func copyFile(src, dst string) error {
 }
 
 func uninstallService() error {
+	// 检查管理员权限
+	if !isAdmin() {
+		return fmt.Errorf("请以管理员身份运行此程序")
+	}
+
 	m, err := mgr.Connect()
 	if err != nil {
-		return fmt.Errorf("连接服务管理器失败（请以管理员身份运行）: %w", err)
+		return fmt.Errorf("连接服务管理器失败: %w", err)
 	}
 	defer m.Disconnect()
 
 	s, err := m.OpenService(serviceName)
 	if err != nil {
 		// 服务不存在，尝试直接清理目录
-		os.RemoveAll(installDir)
+		fmt.Println("服务未找到，直接清理安装目录...")
+		if e := os.RemoveAll(installDir); e != nil {
+			fmt.Printf("删除目录失败: %v\n", e)
+		}
 		os.RemoveAll(oldDataDir)
 		return nil
 	}
 	defer s.Close()
 
+	fmt.Println("正在停止服务...")
 	s.Control(svc.Stop)
 	time.Sleep(2 * time.Second)
 
 	// 强制杀掉可能残留的 Agent 进程，释放文件锁
+	fmt.Println("正在终止 Agent 进程...")
 	exec.Command("cmd", "/c", "taskkill /f /im LanAgent.exe >nul 2>&1").Run()
 	time.Sleep(1 * time.Second)
 
+	fmt.Println("正在删除服务注册...")
 	if err := s.Delete(); err != nil {
 		return fmt.Errorf("删除服务失败: %w", err)
 	}
@@ -306,7 +317,9 @@ func uninstallService() error {
 	_ = eventlog.Remove(serviceName)
 
 	// 删除安装目录，失败则重试
+	fmt.Printf("正在删除安装目录: %s\n", installDir)
 	if err := os.RemoveAll(installDir); err != nil {
+		fmt.Printf("首次删除失败(%v)，重试...\n", err)
 		time.Sleep(2 * time.Second)
 		exec.Command("cmd", "/c", "taskkill /f /im LanAgent.exe >nul 2>&1").Run()
 		time.Sleep(1 * time.Second)
@@ -316,7 +329,18 @@ func uninstallService() error {
 	}
 	os.RemoveAll(oldDataDir)
 
+	fmt.Println("卸载完成。")
 	return nil
+}
+
+func isAdmin() bool {
+	// 尝试连接服务管理器，非管理员会失败
+	m, err := mgr.Connect()
+	if err != nil {
+		return false
+	}
+	m.Disconnect()
+	return true
 }
 
 func parseInstallArgs() (serverURL, token string) {
