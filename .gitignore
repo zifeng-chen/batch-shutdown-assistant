@@ -18,3 +18,4 @@ agent/LanAgent.exe
 # OS
 .DS_Store
 Thumbs.db
+*.db-journal

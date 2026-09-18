@@ -276,12 +276,31 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 		go func() {
 			time.Sleep(2 * time.Second)
 
-			// 用独立 cmd 脚本执行完整卸载：杀进程→停服务→删服务→删目录（含重试）
-			script := fmt.Sprintf(
-				`taskkill /f /im LanAgent.exe >nul 2>&1 & net stop LanAgent >nul 2>&1 & sc delete LanAgent >nul 2>&1 & timeout /t 2 /nobreak >nul & rmdir /s /q "%s" >nul 2>&1 & if exist "%s" (timeout /t 2 /nobreak >nul & taskkill /f /im LanAgent.exe >nul 2>&1 & rmdir /s /q "%s" >nul 2>&1)`,
+			// 生成独立卸载bat到临时目录，当前进程退出后由bat完成清理
+			tmpDir := os.TempDir()
+			batPath := filepath.Join(tmpDir, "lanagent_uninstall.bat")
+			batContent := fmt.Sprintf(
+				"@echo off\r\n"+
+					"ping 127.0.0.1 -n 4 >nul\r\n"+
+					"net stop LanAgent >nul 2>&1\r\n"+
+					"sc delete LanAgent >nul 2>&1\r\n"+
+					"taskkill /f /im LanAgent.exe >nul 2>&1\r\n"+
+					"ping 127.0.0.1 -n 3 >nul\r\n"+
+					"rmdir /s /q \"%s\" >nul 2>&1\r\n"+
+					"if exist \"%s\" (\r\n"+
+					"  ping 127.0.0.1 -n 3 >nul\r\n"+
+					"  taskkill /f /im LanAgent.exe >nul 2>&1\r\n"+
+					"  rmdir /s /q \"%s\" >nul 2>&1\r\n"+
+					")\r\n"+
+					"del \"%%~f0\" >nul 2>&1\r\n",
 				installDir, installDir, installDir,
 			)
-			exec.Command("cmd", "/c", script).Run()
+			if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
+				os.Exit(0)
+				return
+			}
+
+			exec.Command("cmd", "/c", "start", "", "/b", batPath).Start()
 			os.Exit(0)
 		}()
 

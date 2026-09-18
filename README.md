@@ -5,13 +5,17 @@
 ## 功能特性
 
 - **Sysprep OOBE 关机/重启** — 等同于系统准备工具，不消耗 Rearm 次数
-- **设备自动注册** — 安装后 5 秒内出现在管理端
+- **设备自动注册** — 安装后 5 秒内出现在管理端，双向心跳检测
 - **批量操作** — 勾选多台设备一键下发指令
 - **推送升级** — 管理端一键推送新版 Agent，无需逐台操作
 - **文件分发** — 向被管理端推送文件到指定目录
 - **离线检测** — 15 秒未心跳自动标记离线，红色高亮
 - **操作审计** — 所有关键操作完整记录
 - **同包多机** — 同一个安装包部署到任意多台设备
+- **远程卸载** — 管理端删除设备时自动推送卸载指令，彻底清理服务、进程和安装目录
+- **手动卸载调试** — `LanAgent.exe /uninstall` 逐步输出权限检查和每步执行结果，日志写入 U 盘项目路径
+- **重装自动恢复** — 已删除设备重装后 token 变化时自动恢复上线，无需手动干预
+- **首次安装防闪退** — 复制文件后等待就绪，服务启动失败自动重试
 
 ## 系统架构
 
@@ -90,11 +94,10 @@ sudo systemctl enable --now lanagent-server
 
 ```bash
 cd agent
-VERSION=$(cat version.txt | tr -d '[:space:]')
-GOOS=windows GOARCH=amd64 go build -ldflags "-X lan-agent.agentVersion=$VERSION" -o LanAgent.exe .
+GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.buildVersion=1.4.0" -o LanAgent.exe .
 ```
 
-版本号通过 `-ldflags` 嵌入 exe，不依赖外部文件。发版时修改 `agent/version.txt` 再重新编译即可。
+版本号通过 `-ldflags "-X main.buildVersion=x.y.z"` 嵌入 exe，服务端从 exe 二进制中提取版本号供管理页显示。发版时修改 `agent/heartbeat.go` 中的 `buildVersion` 默认值并重新编译即可。`-s -w` 去除符号表和调试信息，减小体积并降低杀软误报率。
 
 ## 项目结构
 
@@ -141,7 +144,7 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-X lan-agent.agentVersion=$VERSION"
 | reboot | `shutdown /r /f /t 0` | ❌ |
 | file_push | 下载文件到指定目录 | ❌ |
 | upgrade | 下载新 exe → 停服务 → 替换 → 重启 | ❌ |
-| uninstall | 停服务 → 删除注册 → 清理文件 | ❌ |
+| uninstall | 停服务 → 删除注册 → 杀进程 → 清理目录（bat 独立执行后自删除） | ❌ |
 
 ## 安全设计
 

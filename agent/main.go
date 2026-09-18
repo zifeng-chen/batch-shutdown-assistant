@@ -14,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/sys/windows/svc"
@@ -201,7 +202,13 @@ func installService(serverURL, token string) error {
 		return fmt.Errorf("获取程序路径失败: %w", err)
 	}
 
-	_ = os.MkdirAll(installDir, 0755)
+	fmt.Println("[安装] 创建安装目录...")
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		fmt.Printf("[安装] os.MkdirAll 失败(%v)，尝试 cmd mkdir...\n", err)
+		if out, err2 := exec.Command("cmd", "/c", "mkdir", installDir).CombinedOutput(); err2 != nil {
+			return fmt.Errorf("创建安装目录失败(%s): %w (cmd: %s)", installDir, err, strings.TrimSpace(string(out)))
+		}
+	}
 	destExe := filepath.Join(installDir, "LanAgent.exe")
 	destCfg := filepath.Join(installDir, configFileName)
 
@@ -210,10 +217,12 @@ func installService(serverURL, token string) error {
 		Token:     token,
 	}
 	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
+	fmt.Println("[安装] 写入配置文件...")
 	if err := os.WriteFile(destCfg, cfgData, 0644); err != nil {
 		return fmt.Errorf("保存配置文件失败: %w", err)
 	}
 
+	fmt.Println("[安装] 连接服务管理器...")
 	m, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("连接服务管理器失败（请以管理员身份运行）: %w", err)
@@ -222,27 +231,36 @@ func installService(serverURL, token string) error {
 
 	s, err := m.OpenService(serviceName)
 	if err == nil {
-		fmt.Println("检测到已有 LAN Agent 服务，正在覆盖安装...")
+		fmt.Println("[安装] 检测到已有 LAN Agent 服务，正在覆盖安装...")
 		s.Control(svc.Stop)
 		time.Sleep(2 * time.Second)
 
+		fmt.Println("[安装] 替换程序文件...")
 		if err := copyFile(exe, destExe); err != nil {
 			s.Close()
 			return fmt.Errorf("替换程序文件失败: %w", err)
 		}
 
+		fmt.Println("[安装] 重启服务...")
 		if err := s.Start(); err != nil {
 			s.Close()
 			return fmt.Errorf("重启服务失败: %w", err)
 		}
 		s.Close()
+		fmt.Println("[安装] 覆盖安装完成")
 		return nil
 	}
 
+	fmt.Println("[安装] 复制程序文件到安装目录...")
 	if err := copyFile(exe, destExe); err != nil {
 		return fmt.Errorf("复制程序文件失败: %w", err)
 	}
 
+	// 等待文件写入完成，避免杀毒软件锁定导致后续操作失败
+	fmt.Println("[安装] 等待文件就绪...")
+	time.Sleep(1 * time.Second)
+
+	fmt.Println("[安装] 创建 Windows 服务...")
 	s, err = m.CreateService(serviceName, destExe, mgr.Config{
 		StartType:   mgr.StartAutomatic,
 		DisplayName: "LAN Agent Service",
@@ -257,14 +275,20 @@ func installService(serverURL, token string) error {
 		log.Printf("[install] event log install warning: %v", err)
 	}
 
-	// 不配置 recovery 自动重启：Agent 正常退出（如升级/卸载）时，
-	// 由独立的升级/卸载脚本控制重启时机，避免 recovery 抢先加载旧 exe 导致替换失败
 	s.SetRecoveryActions([]mgr.RecoveryAction{}, 86400)
 
+	fmt.Println("[安装] 启动服务...")
 	if err := s.Start(); err != nil {
-		return fmt.Errorf("启动服务失败: %w", err)
+		// 首次启动可能因文件锁定失败，等待后重试
+		fmt.Printf("[安装] 首次启动失败(%v)，等待2秒后重试...\n", err)
+		time.Sleep(2 * time.Second)
+		if err2 := s.Start(); err2 != nil {
+			return fmt.Errorf("启动服务失败(重试后仍失败): %w (首次: %v)", err2, err)
+		}
+		fmt.Println("[安装] 重试启动成功")
 	}
 
+	fmt.Println("[安装] 服务安装并启动成功")
 	return nil
 }
 
@@ -276,66 +300,200 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, data, 0755)
 }
 
+// uninstallLog 负责把卸载过程逐步写入 U 盘项目 logs 目录，并同步输出到控制台。
+type uninstallLog struct {
+	file *os.File
+	path string // 日志文件完整路径
+}
+
+// logf 输出一条带时间戳的日志到控制台与日志文件。
+func (l *uninstallLog) logf(format string, args ...interface{}) {
+	line := fmt.Sprintf("[%s] %s", time.Now().Format("2006-01-02 15:04:05"), fmt.Sprintf(format, args...))
+	fmt.Println(line)
+	if l != nil && l.file != nil {
+		fmt.Fprintln(l.file, line)
+		l.file.Sync()
+	}
+}
+
+func (l *uninstallLog) close() {
+	if l != nil && l.file != nil {
+		l.file.Close()
+	}
+}
+
+// findRemovableDrive 查找包含项目目录的U盘/移动磁盘。
+// 优先匹配 DRIVE_REMOVABLE(2)，其次匹配含目标路径的非系统盘(DRIVE_FIXED=3)。
+func findRemovableDrive() string {
+	const projectSub = `应用软件\LanAgent-Deploy`
+	var fixedCandidate string
+
+	for letter := 'A'; letter <= 'Z'; letter++ {
+		root := fmt.Sprintf("%c:\\", letter)
+		rootPtr, err := syscall.UTF16PtrFromString(root)
+		if err != nil {
+			continue
+		}
+		dll := syscall.NewLazyDLL("kernel32.dll")
+		proc := dll.NewProc("GetDriveTypeW")
+		driveType, _, _ := proc.Call(uintptr(unsafe.Pointer(rootPtr)))
+
+		switch driveType {
+		case 2: // DRIVE_REMOVABLE — U盘/SD卡
+			return fmt.Sprintf("%c:", letter)
+		case 3: // DRIVE_FIXED — 可能是被识别为固定磁盘的U盘/移动硬盘
+			if letter == 'C' {
+				continue // 跳过系统盘
+			}
+			targetDir := fmt.Sprintf("%c:\\%s", letter, projectSub)
+			if info, err := os.Stat(targetDir); err == nil && info.IsDir() {
+				fixedCandidate = fmt.Sprintf("%c:", letter)
+			}
+		}
+	}
+	return fixedCandidate
+}
+
+// initUninstallLog 定位 U 盘项目路径并创建 logs 目录与日志文件，命名规则：uninstall-时间.log。
+func initUninstallLog() (*uninstallLog, string) {
+	const projectSub = `应用软件\LanAgent-Deploy`
+	drive := findRemovableDrive()
+	if drive == "" {
+		return nil, "未检测到可移动磁盘(U盘)，日志将只输出到控制台"
+	}
+	logDir := drive + `\` + projectSub + `\logs`
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return nil, fmt.Sprintf("创建日志目录失败 %s: %v", logDir, err)
+	}
+	logFile := filepath.Join(logDir, fmt.Sprintf("uninstall-%s.log", time.Now().Format("20060102_150405")))
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Sprintf("创建日志文件失败 %s: %v", logFile, err)
+	}
+	return &uninstallLog{file: f, path: logFile}, ""
+}
+
+// execCmdOutput 执行命令行并返回合并输出，用于逐步探测权限/命令结果。
+func execCmdOutput(cmdline string) string {
+	out, err := exec.Command("cmd", "/c", cmdline).CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(out)) + " (err: " + err.Error() + ")"
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func uninstallService() error {
-	// 检查管理员权限
-	if !isAdmin() {
-		return fmt.Errorf("请以管理员身份运行此程序")
+	// 如果当前exe位于安装目录内，先复制到临时目录再重新执行，避免删除时文件被自身占用
+	selfExe, _ := os.Executable()
+	selfExe, _ = filepath.EvalSymlinks(selfExe)
+	if strings.HasPrefix(strings.ToLower(selfExe), strings.ToLower(installDir)) {
+		tmpExe := filepath.Join(os.TempDir(), "LanAgent_uninstall.exe")
+		data, err := os.ReadFile(selfExe)
+		if err == nil {
+			if err2 := os.WriteFile(tmpExe, data, 0755); err2 == nil {
+				fmt.Printf("当前exe在安装目录内，已复制到 %s 重新执行卸载...\n", tmpExe)
+				cmd := exec.Command(tmpExe, "/uninstall")
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				cmd.Stdin = os.Stdin
+				cmd.Run()
+				os.Remove(tmpExe)
+				return nil
+			}
+		}
+		fmt.Printf("警告: 无法复制到临时目录(%v)，继续尝试直接卸载\n", err)
 	}
 
+	// 初始化 U 盘日志
+	log, logNote := initUninstallLog()
+	defer log.close()
+	fmt.Println("=== LAN Agent 卸载开始 ===")
+	fmt.Printf("日志文件: %s\n", logNote)
+
+	// 步骤 0：权限检查
+	log.logf("[权限检查] 尝试连接服务管理器以判定管理员/SYSTEM 权限...")
+	isAdminUser := isAdmin()
+	log.logf("[权限检查] isAdmin 结果: %v（false 表示非管理员，通常因未以管理员身份运行或服务管理器拒绝访问）", isAdminUser)
+	if !isAdminUser {
+		log.logf("[权限检查] 当前进程无管理员权限，可能无法停止/删除服务。请以管理员身份重新运行。")
+		return fmt.Errorf("请以管理员身份运行此程序")
+	}
+	log.logf("[权限检查] 已获得管理员/SYSTEM 权限，可继续执行服务操作")
+
+	// 步骤 1：连接服务管理器
+	log.logf("[步骤1] 连接服务管理器(Services Control Manager)...")
 	m, err := mgr.Connect()
 	if err != nil {
+		log.logf("[步骤1] 连接服务管理器失败（权限或系统问题）: %v", err)
 		return fmt.Errorf("连接服务管理器失败: %w", err)
 	}
 	defer m.Disconnect()
+	log.logf("[步骤1] 服务管理器连接成功")
 
+	// 步骤 2：打开服务
+	log.logf("[步骤2] 打开服务 %s ...", serviceName)
 	s, err := m.OpenService(serviceName)
 	if err != nil {
-		// 服务不存在，尝试直接清理目录
-		fmt.Println("服务未找到，直接清理安装目录...")
-		if e := os.RemoveAll(installDir); e != nil {
-			fmt.Printf("删除目录失败: %v\n", e)
-		}
-		os.RemoveAll(oldDataDir)
+		log.logf("[步骤2] 服务 %s 不存在（可能已卸载或从未安装），跳过服务操作，直接清理目录", serviceName)
+		cleanInstallDirs(log)
+		log.logf("=== LAN Agent 卸载完成（服务不存在，仅清理目录）===")
 		return nil
 	}
 	defer s.Close()
+	log.logf("[步骤2] 服务 %s 存在", serviceName)
 
-	fmt.Println("正在停止服务...")
-	s.Control(svc.Stop)
-	time.Sleep(3 * time.Second)
+	// 步骤 3：停止服务
+	log.logf("[步骤3] 停止服务 %s ...", serviceName)
+	if _, err := s.Control(svc.Stop); err != nil {
+		log.logf("[步骤3] 停止服务失败: %v（服务可能已停止或需要更高权限）", err)
+	} else {
+		log.logf("[步骤3] 停止服务指令已发送，等待服务完全停止...")
+		time.Sleep(3 * time.Second)
+		log.logf("[步骤3] 服务已停止")
+	}
 
-	fmt.Println("正在删除服务注册...")
+	// 步骤 4：删除服务注册
+	log.logf("[步骤4] 删除服务注册 %s ...", serviceName)
 	if err := s.Delete(); err != nil {
+		log.logf("[步骤4] 删除服务注册失败: %v", err)
 		return fmt.Errorf("删除服务失败: %w", err)
 	}
+	log.logf("[步骤4] 服务注册已删除")
 
-	_ = eventlog.Remove(serviceName)
-
-	// 用 schtasks 创建一次性任务删除目录：当前进程退出后由系统调度器执行，确保文件锁已释放
-	fmt.Printf("正在清理安装目录: %s\n", installDir)
-	batPath := filepath.Join(os.TempDir(), "lanagent_uninstall.bat")
-	batContent := fmt.Sprintf(
-		"@echo off\r\n"+
-			"taskkill /f /im LanAgent.exe >nul 2>&1\r\n"+
-			"ping 127.0.0.1 -n 3 >nul\r\n"+
-			"rmdir /s /q \"%s\" >nul 2>&1\r\n"+
-			"rmdir /s /q \"%s\" >nul 2>&1\r\n"+
-			"schtasks /delete /tn \"LanAgentUninstall\" /f >nul 2>&1\r\n"+
-			"del \"%s\" >nul 2>&1\r\n",
-		installDir, oldDataDir, batPath,
-	)
-	if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
-		return fmt.Errorf("创建卸载脚本失败: %w", err)
+	// 步骤 5：删除事件日志源
+	log.logf("[步骤5] 删除事件日志源 %s ...", serviceName)
+	if err := eventlog.Remove(serviceName); err != nil {
+		log.logf("[步骤5] 删除事件日志源失败(可忽略): %v", err)
+	} else {
+		log.logf("[步骤5] 事件日志源已删除")
 	}
 
-	taskCmd := fmt.Sprintf(
-		`schtasks /create /tn "LanAgentUninstall" /tr "%s" /sc once /st 00:00 /f >nul 2>&1 & schtasks /run /tn "LanAgentUninstall" >nul 2>&1`,
-		batPath,
-	)
-	exec.Command("cmd", "/c", taskCmd).Run()
+	// 步骤 6：清理安装目录
+	log.logf("[步骤6] 清理安装目录...")
+	log.logf("[步骤6] 先强制结束残留的 LanAgent.exe 进程")
+	killOut := execCmdOutput("taskkill /f /im LanAgent.exe")
+	log.logf("[步骤6] taskkill 输出: %s", killOut)
+	time.Sleep(2 * time.Second)
+	cleanInstallDirs(log)
 
-	fmt.Println("LAN Agent 已卸载成功。")
+	log.logf("=== LAN Agent 卸载完成 ===")
 	return nil
+}
+
+// cleanInstallDirs 删除安装目录与旧数据目录，逐目录记录结果。
+func cleanInstallDirs(log *uninstallLog) {
+	for _, dir := range []string{installDir, oldDataDir} {
+		log.logf("[清理] 删除目录: %s ...", dir)
+		if err := os.RemoveAll(dir); err != nil {
+			log.logf("[清理] 删除目录失败: %v", err)
+			continue
+		}
+		if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+			log.logf("[清理] 目录已删除: %s", dir)
+		} else {
+			log.logf("[清理] 目录仍存在（可能文件被占用），需手动检查: %s", dir)
+		}
+	}
 }
 
 func isAdmin() bool {

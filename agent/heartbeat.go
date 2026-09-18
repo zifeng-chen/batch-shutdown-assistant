@@ -23,7 +23,7 @@ type HeartbeatPayload struct {
 }
 
 // buildVersion 由编译时 -ldflags "-X main.buildVersion=x.y.z" 注入，是版本号的唯一来源
-var buildVersion = "1.3.8"
+var buildVersion = "1.4.0"
 
 func getAgentVersion() string {
 	return buildVersion

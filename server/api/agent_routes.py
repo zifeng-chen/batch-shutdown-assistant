@@ -52,14 +52,39 @@ async def agent_heartbeat(payload: HeartbeatRequest, request: Request, db: Async
             select(Device).where(Device.ip == payload.ip)
         )
         ip_device = result.scalar_one_or_none()
-        # 如果该IP对应的设备已被软删除，不自动重新注册
+        # 已软删除的设备：仅当token变化（重装）时自动恢复，防止未卸载干净的旧agent误恢复
         if ip_device and ip_device.deleted_at is not None:
+            if agent_token and ip_device.token != agent_token:
+                logger.info(f"Recovering soft-deleted device {ip_device.id} ({payload.hostname} / {payload.ip}) via heartbeat (token changed)")
+                ip_device.deleted_at = None
+                ip_device.hostname = payload.hostname
+                ip_device.os_info = payload.os
+                ip_device.rearm_count = payload.rearm_count
+                ip_device.agent_version = payload.agent_version
+                ip_device.last_heartbeat = now_bjt()
+                ip_device.token = agent_token
+                ip_device.status = DeviceStatus.ONLINE if payload.status == "online" else DeviceStatus.OFFLINE
+                await db.commit()
+                return {"device_id": ip_device.id, "status": "recovered"}
             return {"device_id": ip_device.id, "status": "deleted"}
         device = ip_device
 
     if device:
-        # 已软删除的设备不接受心跳，不自动恢复
+        # 已软删除的设备：仅当token变化（重装）时自动恢复
         if device.deleted_at is not None:
+            if agent_token and device.token != agent_token:
+                logger.info(f"Recovering soft-deleted device {device.id} ({payload.hostname} / {payload.ip}) via heartbeat (token changed)")
+                device.deleted_at = None
+                device.hostname = payload.hostname
+                device.os_info = payload.os
+                device.ip = payload.ip
+                device.rearm_count = payload.rearm_count
+                device.agent_version = payload.agent_version
+                device.last_heartbeat = now_bjt()
+                device.token = agent_token
+                device.status = DeviceStatus.ONLINE if payload.status == "online" else DeviceStatus.OFFLINE
+                await db.commit()
+                return {"device_id": device.id, "status": "recovered"}
             return {"device_id": device.id, "status": "deleted"}
 
         device.hostname = payload.hostname
