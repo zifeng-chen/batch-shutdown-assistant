@@ -61,8 +61,16 @@ async def create_task(
     )
     db.add(task)
 
+    # 过滤设备：只对存在的设备建结果记录，不存在的 id 记入 skipped
+    existing_rows = await db.execute(
+        select(Device.id).where(Device.id.in_(payload.device_ids)) if payload.device_ids else select(Device.id).where(False)
+    )
+    existing_ids = {row[0] for row in existing_rows.all()}
+    valid_ids = [did for did in payload.device_ids if did in existing_ids]
+    skipped_ids = [did for did in payload.device_ids if did not in existing_ids]
+
     task_results = []
-    for device_id in payload.device_ids:
+    for device_id in valid_ids:
         tr = TaskResult(
             id=str(uuid.uuid4()),
             task_id=task.id,
@@ -113,8 +121,11 @@ async def create_task(
     await db.commit()
 
     await log_audit(db, "task_create", current_user["username"],
-                    target=f"{payload.task_type}:{len(payload.device_ids)} devices",
-                    detail=json.dumps(payload.params) if payload.params else None)
+                    target=f"{payload.task_type}:{len(valid_ids)} devices",
+                    detail=json.dumps({
+                        "params": payload.params,
+                        "skipped_unknown_devices": skipped_ids,
+                    }) if (payload.params or skipped_ids) else None)
 
     return task
 

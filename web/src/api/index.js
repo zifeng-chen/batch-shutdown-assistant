@@ -14,8 +14,11 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401) {
-      // 登录页自身（如版本号探测）返回 401 时不得重定向，否则会造成无限刷新
-      if (window.location.pathname !== '/login') {
+      // 登录接口自身的 401 属于「账密错误」，不应触发重定向
+      const reqUrl = err.config?.url || ''
+      const isAuthRequest = reqUrl.includes('/auth/login') || reqUrl.includes('/auth/change-password')
+      // 已在登录页时也不重定向，避免造成无限刷新
+      if (!isAuthRequest && window.location.pathname !== '/login') {
         localStorage.removeItem('token')
         window.location.href = '/login'
       }

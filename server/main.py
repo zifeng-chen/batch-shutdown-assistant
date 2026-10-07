@@ -7,12 +7,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, update
 
 from database import init_db, async_session
 from models.models import User, Device, DeviceStatus
 from api.auth import hash_password
+from api.audit import purge_old_audits
+from api.upgrade_routes import _cleanup_uploads
 from config import now_bjt, HEARTBEAT_TIMEOUT_SECONDS, SECRET_KEY, APP_VERSION
 from api.agent_routes import router as agent_router
 from api.device_routes import router as device_router
@@ -64,6 +65,20 @@ async def heartbeat_timeout_checker():
             logging.error(f"Heartbeat checker error: {e}")
 
 
+async def maintenance_loop():
+    """每日一次：清理超期审计日志与过期上传文件。"""
+    while True:
+        await asyncio.sleep(24 * 3600)
+        try:
+            async with async_session() as db:
+                deleted = await purge_old_audits(db)
+            if deleted:
+                logging.info(f"Audit purge: removed {deleted} old entries")
+            _cleanup_uploads()
+        except Exception as e:
+            logging.error(f"Maintenance loop error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if SECRET_KEY == "change-me-in-production":
@@ -73,9 +88,11 @@ async def lifespan(app: FastAPI):
     await init_db()
     await ensure_default_admin()
     task = asyncio.create_task(heartbeat_timeout_checker())
+    maintenance = asyncio.create_task(maintenance_loop())
     logging.info("Server ready")
     yield
     task.cancel()
+    maintenance.cancel()
 
 
 app = FastAPI(title="LAN Agent Manager", version=APP_VERSION, lifespan=lifespan)

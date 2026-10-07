@@ -1,3 +1,4 @@
+import hmac
 import json
 import logging
 
@@ -14,6 +15,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 TERMINAL_STATUSES = {"success", "failed", "cancelled", "timeout"}
+
+# 单条任务输出最大字符数，超出截断
+MAX_OUTPUT_CHARS = 100_000
+
+
+def _token_equal(expected: str | None, provided: str) -> bool:
+    """恒定时间比较，避免时序侧信道。任一方为空则视为不匹配。"""
+    if not expected or not provided:
+        return False
+    return hmac.compare_digest(expected, provided)
 
 
 async def _sync_parent_task(db, task_id: str):
@@ -76,7 +87,7 @@ async def agent_websocket(websocket: WebSocket, device_id: str, token: str = Que
             select(Device).where(Device.id == device_id)
         )
         device = result.scalar_one_or_none()
-        if not device or device.token != token:
+        if not device or not _token_equal(device.token, token):
             await websocket.close(code=4001, reason="Unauthorized")
             return
 
@@ -104,7 +115,11 @@ async def agent_websocket(websocket: WebSocket, device_id: str, token: str = Que
                     task_result = tr.scalar_one_or_none()
                     if task_result:
                         task_result.status = msg.get("status", "unknown")
-                        task_result.output = msg.get("output", "")
+                        output = msg.get("output", "")
+                        # 限制单条输出长度，避免超长回传撑爆数据库
+                        if len(output) > MAX_OUTPUT_CHARS:
+                            output = output[:MAX_OUTPUT_CHARS] + f"\n...[truncated, total {len(output)} chars]"
+                        task_result.output = output
                         task_result.finished_at = now_bjt()
                         await db.commit()
 

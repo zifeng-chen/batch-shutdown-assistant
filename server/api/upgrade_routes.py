@@ -12,6 +12,37 @@ router = APIRouter(prefix="/api/upgrade", tags=["upgrade"])
 
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 
+# 单文件上传上限（500MB）
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+# 上传目录保留的最新文件数量，超出按修改时间清理
+UPLOAD_KEEP = 20
+
+
+def _cleanup_uploads(keep: int = UPLOAD_KEEP) -> None:
+    """按修改时间保留最新的 keep 个文件，删除更早的，防止磁盘无限增长。"""
+    try:
+        entries = [
+            os.path.join(UPLOAD_DIR, name)
+            for name in os.listdir(UPLOAD_DIR)
+            if os.path.isfile(os.path.join(UPLOAD_DIR, name))
+        ]
+    except FileNotFoundError:
+        return
+    entries.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    for path in entries[keep:]:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _is_pe(data: bytes) -> bool:
+    """校验 DOS/PE 头：'MZ' 开头，且 e_lfanew 处为 'PE\\0\\0'。"""
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        return False
+    offset = int.from_bytes(data[0x3C:0x40], "little")
+    return offset + 4 <= len(data) and data[offset:offset + 4] == b"PE\x00\x00"
+
 
 def _extract_version_from_exe(exe_path: str) -> str:
     """从编译好的 exe 中提取 buildVersion 字符串"""
@@ -35,13 +66,20 @@ async def upload_agent_exe(
     if not file.filename.lower().endswith(".exe"):
         raise HTTPException(status_code=400, detail="仅支持 .exe 文件")
 
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="文件超过 500MB 上限")
+    if not _is_pe(content):
+        raise HTTPException(status_code=400, detail="不是有效的 Windows PE 可执行文件")
+
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     filename = f"agent-{uuid.uuid4().hex[:8]}.exe"
     save_path = os.path.join(UPLOAD_DIR, filename)
 
-    content = await file.read()
     with open(save_path, "wb") as f:
         f.write(content)
+
+    _cleanup_uploads()
 
     return {"filename": filename, "size": len(content)}
 
@@ -99,7 +137,11 @@ async def upload_file(
     save_path = os.path.join(UPLOAD_DIR, save_name)
 
     content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="文件超过 500MB 上限")
     with open(save_path, "wb") as f:
         f.write(content)
+
+    _cleanup_uploads()
 
     return {"filename": save_name, "original_name": safe_name, "size": len(content)}
