@@ -68,6 +68,7 @@ export const auditApi = {
 
 export const deployApi = {
   generateToken: (data) => api.post('/deploy/generate-token', data),
+  serverUrl: () => api.get('/deploy/server-url'),
   downloadPackage: (deviceIds) =>
     api.post('/deploy/package', { device_ids: deviceIds || [] }, { responseType: 'blob' }),
 }

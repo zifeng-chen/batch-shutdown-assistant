@@ -134,3 +134,77 @@ func TestMinExeSizeThresholdSane(t *testing.T) {
 		t.Errorf("最小包大小阈值过小: %d", minExeSizeBytes)
 	}
 }
+
+// ---------- 下载地址来源校验 ----------
+
+func TestValidateServerURL_SameOrigin(t *testing.T) {
+	cfg := &Config{ServerURL: "http://192.168.2.57:8080"}
+	for _, u := range []string{
+		"http://192.168.2.57:8080/api/upgrade/latest-download",
+		"http://192.168.2.57:8080/api/upgrade/file/abc.exe",
+	} {
+		if err := validateServerURL(cfg, u); err != nil {
+			t.Errorf("同源地址应放行: %s (%v)", u, err)
+		}
+	}
+}
+
+func TestValidateServerURL_RejectsForeignHost(t *testing.T) {
+	cfg := &Config{ServerURL: "http://192.168.2.57:8080"}
+	for _, u := range []string{
+		"http://evil.example.com/payload.exe",
+		"http://192.168.2.99:8080/payload.exe", // 同端口不同 IP
+		"http://192.168.2.57:9999/payload.exe", // 同 IP 不同端口
+	} {
+		if err := validateServerURL(cfg, u); err == nil {
+			t.Errorf("非本服务器地址应被拒绝: %s", u)
+		}
+	}
+}
+
+func TestValidateServerURL_RejectsBadScheme(t *testing.T) {
+	cfg := &Config{ServerURL: "http://192.168.2.57:8080"}
+	if err := validateServerURL(cfg, "ftp://192.168.2.57:8080/x.exe"); err == nil {
+		t.Error("非 http(s) 协议应被拒绝")
+	}
+}
+
+// ---------- 路径穿越防护 ----------
+
+func TestSafeJoinUnder_Normal(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "data", "files")
+	got, err := safeJoinUnder(base, "report.txt")
+	if err != nil {
+		t.Fatalf("正常文件名不应报错: %v", err)
+	}
+	if got != filepath.Join(base, "report.txt") {
+		t.Errorf("拼接结果异常: %s", got)
+	}
+}
+
+func TestSafeJoinUnder_RejectsTraversal(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "data", "files")
+	for _, name := range []string{
+		"../evil.exe",
+		"..\\evil.exe",
+		"sub/../../evil.exe",
+	} {
+		if _, err := safeJoinUnder(base, name); err == nil {
+			t.Errorf("穿越路径应被拒绝: %s", name)
+		}
+	}
+}
+
+func TestSafeJoinUnder_RejectsAbsolute(t *testing.T) {
+	base := filepath.Join(string(filepath.Separator), "data", "files")
+	abs := filepath.Join(string(filepath.Separator), "Windows", "System32", "evil.dll")
+	if _, err := safeJoinUnder(base, abs); err == nil {
+		t.Error("绝对路径应被拒绝")
+	}
+}
+
+func TestSafeJoinUnder_RejectsEmpty(t *testing.T) {
+	if _, err := safeJoinUnder("/tmp", ""); err == nil {
+		t.Error("空文件名应被拒绝")
+	}
+}

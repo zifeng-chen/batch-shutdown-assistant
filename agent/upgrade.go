@@ -44,7 +44,10 @@ func appendUpgradeLog(format string, args ...interface{}) {
 
 // downloadUpgrade 下载新版本 exe 到临时目录，并做基本校验。
 // 返回可执行文件路径与错误。
-func downloadUpgrade(url string) (string, error) {
+func downloadUpgrade(cfg *Config, url string) (string, error) {
+	if err := validateServerURL(cfg, url); err != nil {
+		return "", err
+	}
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -186,7 +189,7 @@ exit /b 0
 func startUpgrade(cfg *Config, url, version string) error {
 	appendUpgradeLog("upgrade requested: version=%s url=%s", version, url)
 
-	newExe, err := downloadUpgrade(url)
+	newExe, err := downloadUpgrade(cfg, url)
 	if err != nil {
 		appendUpgradeLog("upgrade aborted: %v", err)
 		return err

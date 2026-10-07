@@ -778,7 +778,9 @@ const doUpgrade = async () => {
   upgrading.value = true
   try {
     // 直接使用服务器上编译好的 exe，无需再上传
-    const serverExeUrl = `${window.location.origin}/api/upgrade/latest-download`
+    // 用服务端返回的局域网地址，避免浏览器用 localhost 访问时把 localhost 推给远端设备
+    const { data: urlRes } = await deployApi.serverUrl()
+    const serverExeUrl = `${urlRes.server_url}/api/upgrade/latest-download`
 
     const deviceIds = targetDevices.map(d => d.id)
     await taskApi.create({
@@ -817,7 +819,8 @@ const doFilePush = async () => {
   filePushing.value = true
   try {
     const uploadRes = await upgradeApi.fileUpload(filePushFile.value)
-    const fileUrl = `${window.location.origin}/api/upgrade/file/${uploadRes.data.filename}`
+    const { data: urlRes } = await deployApi.serverUrl()
+    const fileUrl = `${urlRes.server_url}/api/upgrade/file/${uploadRes.data.filename}`
     const deviceIds = targetDevices.map(d => d.id)
     await taskApi.create({
       task_type: 'file_push',

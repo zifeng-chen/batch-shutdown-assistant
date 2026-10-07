@@ -19,6 +19,42 @@ import os
 router = APIRouter(prefix="/api/deploy", tags=["deploy"])
 
 
+def _detect_lan_ip() -> str | None:
+    """探测本机局域网 IP，供设备下载地址使用（localhost/127.0.0.1 时替换）。"""
+    import socket
+    local_ip = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+    if not local_ip:
+        try:
+            for addr in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = addr[4][0]
+                if not ip.startswith("127."):
+                    local_ip = ip
+                    break
+        except Exception:
+            pass
+    return local_ip
+
+
+def _resolve_server_url(request: Request) -> str:
+    """返回设备应访问的服务器基地址；浏览器用 localhost 访问时替换为局域网 IP。"""
+    host = request.headers.get("host", "localhost:8080")
+    hostname_part = host.split(":")[0]
+    if hostname_part in ("localhost", "127.0.0.1"):
+        local_ip = _detect_lan_ip()
+        if not local_ip:
+            raise HTTPException(status_code=500, detail="无法检测宿主机局域网IP，请用局域网IP访问管理端后重试")
+        port = host.split(":")[1] if ":" in host else "8080"
+        host = f"{local_ip}:{port}"
+    return f"http://{host}"
+
+
 class DeployPackageRequest(BaseModel):
     device_ids: list[str] | None = None
     group_name: str | None = None
@@ -28,6 +64,13 @@ class GenerateTokenRequest(BaseModel):
     hostname: str = ""
     ip: str = ""
     group_name: str = ""
+
+
+@router.get("/server-url")
+async def get_server_url(request: Request, current_user: dict = Depends(get_current_user)):
+    """返回设备应访问的服务器基地址。前端推送升级/文件时用它构造下载 URL，
+    避免浏览器用 localhost 访问时把 localhost 推给远端设备。"""
+    return {"server_url": _resolve_server_url(request)}
 
 
 @router.post("/generate-token")
@@ -69,32 +112,7 @@ async def download_deploy_package(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    host = request.headers.get("host", "localhost:8080")
-    hostname_part = host.split(":")[0]
-    if hostname_part in ("localhost", "127.0.0.1"):
-        import socket
-        local_ip = None
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-        except Exception:
-            pass
-        if not local_ip:
-            try:
-                for addr in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-                    ip = addr[4][0]
-                    if not ip.startswith("127."):
-                        local_ip = ip
-                        break
-            except Exception:
-                pass
-        if not local_ip:
-            raise HTTPException(status_code=500, detail="无法检测宿主机局域网IP，请用局域网IP访问管理端后重新下载")
-        port = host.split(":")[1] if ":" in host else "8080"
-        host = f"{local_ip}:{port}"
-    server_url = f"http://{host}"
+    server_url = _resolve_server_url(request)
 
     agent_exe_path = os.path.join(os.path.dirname(BASE_DIR), "agent", "LanAgent.exe")
     if not os.path.isfile(agent_exe_path):

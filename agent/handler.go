@@ -192,12 +192,35 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			return result
 		}
 
+		// 只允许从本管理服务器下载
+		if err := validateServerURL(cfg, params.URL); err != nil {
+			result.Status = "failed"
+			result.Output = err.Error()
+			return result
+		}
+
+		// 目标目录限定在 filesDir 之下，防止写入任意路径
 		destDir := params.DestDir
 		if destDir == "" {
 			destDir = filesDir
 		}
+		baseClean := filepath.Clean(filesDir)
+		dirClean := filepath.Clean(destDir)
+		if dirClean != baseClean && !strings.HasPrefix(dirClean, baseClean+string(filepath.Separator)) {
+			result.Status = "failed"
+			result.Output = fmt.Sprintf("目标目录越界，仅允许 %s 及子目录", filesDir)
+			return result
+		}
+
+		// 文件名不得穿越或为绝对路径
+		destPath, err := safeJoinUnder(destDir, params.Filename)
+		if err != nil {
+			result.Status = "failed"
+			result.Output = err.Error()
+			return result
+		}
+
 		_ = os.MkdirAll(destDir, 0755)
-		destPath := filepath.Join(destDir, params.Filename)
 
 		resp, err := http.Get(params.URL)
 		if err != nil {
