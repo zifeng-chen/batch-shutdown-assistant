@@ -155,71 +155,25 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			result.Output = "missing upgrade url"
 			return result
 		}
+		if isUpgradeRunning() {
+			result.Status = "failed"
+			result.Output = "upgrade already in progress"
+			return result
+		}
 
+		if err := startUpgrade(cfg, params.URL, params.Version); err != nil {
+			result.Status = "failed"
+			result.Output = fmt.Sprintf("upgrade failed: %v", err)
+			return result
+		}
+
+		markUpgradeRunning()
 		result.Status = "success"
-		result.Output = fmt.Sprintf("upgrade to %s initiated", params.Version)
+		result.Output = fmt.Sprintf("upgrade to %s staged, service will restart", params.Version)
 
+		// 升级脚本已独立启动，这里退出服务让脚本完成文件替换
 		go func() {
 			time.Sleep(2 * time.Second)
-
-			resp, err := http.Get(params.URL)
-			if err != nil {
-				log.Printf("[upgrade] download failed: %v", err)
-				return
-			}
-			defer resp.Body.Close()
-
-			tmpPath := filepath.Join(os.TempDir(), "LanAgent_new.exe")
-			f, err := os.Create(tmpPath)
-			if err != nil {
-				log.Printf("[upgrade] create temp file failed: %v", err)
-				return
-			}
-			_, err = io.Copy(f, resp.Body)
-			f.Close()
-			if err != nil {
-				log.Printf("[upgrade] write temp file failed: %v", err)
-				return
-			}
-
-			destExe := installDir + `\LanAgent.exe`
-			oldExe := installDir + `\LanAgent.exe.old`
-
-			// 在退出前先清空服务 recovery 配置，防止 os.Exit 后 recovery 抢先重启旧 exe
-			if out, err := exec.Command("cmd", "/c", `sc failure LanAgent reset= 0 actions= ""`).CombinedOutput(); err != nil {
-				log.Printf("[upgrade] clear recovery failed: %v, output: %s", err, string(out))
-			} else {
-				log.Printf("[upgrade] recovery cleared successfully")
-			}
-
-			// 用 schtasks 创建一次性延迟任务，独立完成替换+重启
-			batPath := filepath.Join(os.TempDir(), "lanagent_upgrade.bat")
-			batContent := fmt.Sprintf(
-				`@echo off`+"\r\n"+
-					`sc failure LanAgent reset= 0 actions= "" >nul 2>&1`+"\r\n"+ // 双重保险：再次清空 recovery
-					`sc stop LanAgent >nul 2>&1`+"\r\n"+ // 停服务，释放 exe 占用
-					`ping 127.0.0.1 -n 3 >nul`+"\r\n"+ // 等服务完全停止
-					`move /Y "%s" "%s" >nul 2>&1`+"\r\n"+ // rename 旧 exe
-					`copy /Y "%s" "%s" >nul 2>&1`+"\r\n"+ // copy 新 exe 到原路径
-					`ping 127.0.0.1 -n 2 >nul`+"\r\n"+
-					`sc start LanAgent >nul 2>&1`+"\r\n"+ // 启动加载新 exe
-					`del "%s" >nul 2>&1`+"\r\n", // 删 .old
-				destExe, oldExe, tmpPath, destExe, oldExe,
-			)
-			if err := os.WriteFile(batPath, []byte(batContent), 0644); err != nil {
-				log.Printf("[upgrade] write bat failed: %v", err)
-				return
-			}
-
-			// schtasks 立即运行（不等延迟），在 recovery 触发前先停掉服务
-			taskCmd := fmt.Sprintf(
-				`schtasks /create /tn "LanAgentUpgrade" /tr "%s" /sc once /st 00:00 /f >nul 2>&1 & schtasks /run /tn "LanAgentUpgrade" >nul 2>&1 & timeout /t 3 /nobreak >nul & schtasks /delete /tn "LanAgentUpgrade" /f >nul 2>&1`,
-				batPath,
-			)
-			c := exec.Command("cmd", "/c", taskCmd)
-			c.Start()
-
-			log.Printf("[upgrade] handoff to scheduled task, exiting")
 			os.Exit(0)
 		}()
 
@@ -269,6 +223,54 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 
 		result.Status = "success"
 		result.Output = fmt.Sprintf("file saved to %s (%d bytes)", destPath, written)
+
+	case "hostmsg":
+		var params struct {
+			Title   string `json:"title"`
+			Message string `json:"message"`
+			Timeout int    `json:"timeout"`
+		}
+		if cmd.Params != nil {
+			_ = json.Unmarshal(cmd.Params, &params)
+		}
+
+		timeout := params.Timeout
+		if timeout <= 0 {
+			timeout = 15 // 默认 15 秒自动关闭
+		}
+
+		title := params.Title
+		message := params.Message
+		if message == "" {
+			// 未指定内容时，弹出本机自身信息（优先用缓存，无缓存则即时采集）
+			info := sysInfoCache.info
+			if info == nil {
+				info = getSysInfo(true)
+			}
+			title, message = buildHostMessage(info, getLocalIP(), getHostname(), getAgentVersion())
+		}
+		if title == "" {
+			title = "设备信息提示"
+		}
+
+		if err := showHostMessage(title, message, uint32(timeout)); err != nil {
+			result.Status = "failed"
+			result.Output = fmt.Sprintf("show message failed: %v", err)
+			return result
+		}
+		result.Status = "success"
+		result.Output = fmt.Sprintf("message displayed on session desktop (auto close in %ds)", timeout)
+
+	case "sysinfo":
+		info := getSysInfo(true)
+		payload, err := json.Marshal(info)
+		if err != nil {
+			result.Status = "failed"
+			result.Output = fmt.Sprintf("marshal sysinfo failed: %v", err)
+			return result
+		}
+		result.Status = "success"
+		result.Output = string(payload)
 
 	case "uninstall":
 		result.Status = "success"
@@ -390,10 +392,10 @@ func writeSetupCompleteScript(cfg *Config) error {
 		"net start LanAgent\r\n" +
 		`reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 0 /f` + "\r\n"
 
-	logDir := logsDir
-	_ = os.MkdirAll(logDir, 0755)
+	recoverDir := dataDir
+	_ = os.MkdirAll(recoverDir, 0755)
 
-	recoverFlag := filepath.Join(logDir, "need_recover")
+	recoverFlag := filepath.Join(recoverDir, "need_recover")
 	_ = os.WriteFile(recoverFlag, []byte("1"), 0644)
 
 	return os.WriteFile(filepath.Join(scriptDir, "SetupComplete.cmd"), []byte(script), 0755)

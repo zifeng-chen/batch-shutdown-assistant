@@ -20,11 +20,12 @@ const filesDir = `C:\Program Files\LanAgent\data\files`
 const oldDataDir = `C:\LanAgent`
 
 type Config struct {
-	ServerURL  string `json:"server_url"`
-	Token      string `json:"token"`
-	DeviceID   string `json:"device_id"`
-	AgentName  string `json:"agent_name"`
-	ListenPort int    `json:"listen_port"`
+	ServerURL    string `json:"server_url"`
+	Token        string `json:"token"`
+	DeviceID     string `json:"device_id"`
+	AgentName    string `json:"agent_name"`
+	ListenPort   int    `json:"listen_port"`
+	EnrollSecret string `json:"enroll_secret"`
 }
 
 func getConfigPath() (string, error) {

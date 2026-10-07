@@ -2,13 +2,24 @@
 __pycache__/
 *.pyc
 *.db
+.pytest_cache/
+.venv/
+server/.venv/
 server/uploads/
+server/tests/test_lanagent.db
+server/static/
+server/*.db
 
 # Node
 web/node_modules/
 web/dist/
+web/coverage/
 
 # Go
+agent/LanAgent.exe
+
+# 构建产物
+server/static/
 agent/LanAgent.exe
 
 # IDE

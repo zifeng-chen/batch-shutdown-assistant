@@ -4,6 +4,7 @@ import ipaddress
 import uuid
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -13,6 +14,12 @@ from api.auth import get_current_user
 from api.audit import log_audit
 
 router = APIRouter(prefix="/api/devices", tags=["devices-import"])
+
+
+class IpRangeRequest(BaseModel):
+    start_ip: str
+    end_ip: str
+    group_name: str | None = None
 
 
 @router.post("/import/csv")
@@ -69,17 +76,21 @@ async def import_csv(
 
 @router.post("/import/ip-range")
 async def import_ip_range(
-    start_ip: str = Form(...),
-    end_ip: str = Form(...),
-    group_name: str = Form(default=""),
+    payload: IpRangeRequest,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
+    start_ip = payload.start_ip
+    end_ip = payload.end_ip
+    group_name = payload.group_name or ""
     try:
         start = ipaddress.IPv4Address(start_ip)
         end = ipaddress.IPv4Address(end_ip)
     except ipaddress.AddressValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid IP: {e}")
+
+    if int(end) < int(start):
+        raise HTTPException(status_code=400, detail="结束 IP 不能小于起始 IP")
 
     if int(end) - int(start) > 1024:
         raise HTTPException(status_code=400, detail="IP range too large (max 1024)")

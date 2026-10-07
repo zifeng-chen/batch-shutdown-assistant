@@ -90,14 +90,25 @@ sudo systemctl enable --now lanagent-server
 
 ### 4. 编译 Agent（开发/发版时需要）
 
-需要 Go 1.21+：
+**推荐用一键构建脚本**，版本号唯一来源是 `server/config.py` 的 `APP_VERSION` 常量：
+
+```bash
+./build.sh                     # 全量构建（Agent + 前端）
+./build.sh --version 1.4.2     # 指定版本构建，并回写 config.py
+./build.sh --agent-only        # 仅编译 Agent
+./build.sh --web-only          # 仅构建前端
+```
+
+发版流程：**改 `server/config.py` 的 `APP_VERSION` → 执行 `./build.sh`**，脚本会自动同步到 `web/package.json` 与 Agent，无需手动改多处。
+
+手动编译 Agent（需要 Go 1.21+）：
 
 ```bash
 cd agent
-GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.buildVersion=1.4.0" -o LanAgent.exe .
+GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.buildVersion=1.4.1" -o LanAgent.exe .
 ```
 
-版本号通过 `-ldflags "-X main.buildVersion=x.y.z"` 嵌入 exe，服务端从 exe 二进制中提取版本号供管理页显示。发版时修改 `agent/heartbeat.go` 中的 `buildVersion` 默认值并重新编译即可。`-s -w` 去除符号表和调试信息，减小体积并降低杀软误报率。
+版本号通过 `-ldflags "-X main.buildVersion=x.y.z"` 嵌入 exe，服务端从 exe 二进制中提取版本号供管理页显示。`-s -w` 去除符号表和调试信息，减小体积并降低杀软误报率。前端 `npm run build` 的产物由 `vite.config.js` 直接输出到 `server/static/`。
 
 ## 项目结构
 

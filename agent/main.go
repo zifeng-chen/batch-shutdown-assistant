@@ -35,6 +35,10 @@ func (s *AgentService) Execute(args []string, r <-chan svc.ChangeRequest, change
 
 	migrateOldData()
 
+	// 升级后清理残留临时文件，并确认服务恢复策略处于可用状态
+	cleanupUpgradeArtifacts()
+	ensureServiceRecovery()
+
 	cfg, err := LoadConfig()
 	if err != nil {
 		log.Printf("[service] load config failed: %v", err)
@@ -196,7 +200,7 @@ func pauseAndExit(code int) {
 	os.Exit(code)
 }
 
-func installService(serverURL, token string) error {
+func installService(serverURL, token, enrollSecret string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("获取程序路径失败: %w", err)
@@ -213,8 +217,9 @@ func installService(serverURL, token string) error {
 	destCfg := filepath.Join(installDir, configFileName)
 
 	cfg := &Config{
-		ServerURL: serverURL,
-		Token:     token,
+		ServerURL:    serverURL,
+		Token:        token,
+		EnrollSecret: enrollSecret,
 	}
 	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
 	fmt.Println("[安装] 写入配置文件...")
@@ -506,7 +511,7 @@ func isAdmin() bool {
 	return true
 }
 
-func parseInstallArgs() (serverURL, token string) {
+func parseInstallArgs() (serverURL, token, enrollSecret string) {
 	for _, arg := range os.Args[1:] {
 		if strings.HasPrefix(arg, "/server=") {
 			serverURL = strings.TrimPrefix(arg, "/server=")
@@ -514,11 +519,14 @@ func parseInstallArgs() (serverURL, token string) {
 		if strings.HasPrefix(arg, "/token=") {
 			token = strings.TrimPrefix(arg, "/token=")
 		}
+		if strings.HasPrefix(arg, "/enroll=") {
+			enrollSecret = strings.TrimPrefix(arg, "/enroll=")
+		}
 	}
 	return
 }
 
-func loadDeployConf() (serverURL string, err error) {
+func loadDeployConf() (serverURL, token, enrollSecret string, err error) {
 	var candidates []string
 
 	if exe, e := os.Executable(); e == nil {
@@ -539,7 +547,7 @@ func loadDeployConf() (serverURL string, err error) {
 		}
 	}
 	if !found {
-		return "", fmt.Errorf("deploy.conf not found in exe directory or working directory")
+		return "", "", "", fmt.Errorf("deploy.conf not found in exe directory or working directory")
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -557,17 +565,25 @@ func loadDeployConf() (serverURL string, err error) {
 		if key == "server" {
 			serverURL = val
 		}
+		if key == "enroll" {
+			enrollSecret = val
+		}
+		if key == "token" {
+			token = val
+		}
 	}
 	if serverURL == "" {
-		return "", fmt.Errorf("deploy.conf missing server")
+		return "", "", "", fmt.Errorf("deploy.conf missing server")
 	}
-	return serverURL, nil
+	return serverURL, token, enrollSecret, nil
 }
 
 func generateToken() string {
 	b := make([]byte, 16)
-	rand.Read(b)
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%12x",
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
@@ -577,12 +593,12 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "/install":
-			serverURL, token := parseInstallArgs()
+			serverURL, token, enrollSecret := parseInstallArgs()
 			if serverURL == "" || token == "" {
-				fmt.Fprintln(os.Stderr, "用法: LanAgent.exe /install /server=<地址> /token=<令牌>")
+				fmt.Fprintln(os.Stderr, "用法: LanAgent.exe /install /server=<地址> /token=<令牌> [/enroll=<注册密钥>]")
 				os.Exit(1)
 			}
-			if err := installService(serverURL, token); err != nil {
+			if err := installService(serverURL, token, enrollSecret); err != nil {
 				fmt.Fprintf(os.Stderr, "安装失败: %v\n", err)
 				os.Exit(1)
 			}
@@ -590,17 +606,20 @@ func main() {
 			return
 
 		case "/silent":
-			serverURL, err := loadDeployConf()
+			serverURL, tokenFromConf, enrollSecret, err := loadDeployConf()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "静默安装失败: %v\n", err)
 				os.Exit(1)
 			}
-			token := generateToken()
-			if err := installService(serverURL, token); err != nil {
+			token := tokenFromConf
+			if token == "" {
+				token = generateToken()
+			}
+			if err := installService(serverURL, token, enrollSecret); err != nil {
 				fmt.Fprintf(os.Stderr, "静默安装失败: %v\n", err)
 				os.Exit(1)
 			}
-			cfg := &Config{ServerURL: serverURL, Token: token}
+			cfg := &Config{ServerURL: serverURL, Token: token, EnrollSecret: enrollSecret}
 			_ = sendHeartbeat(cfg, "online")
 			return
 
@@ -619,8 +638,11 @@ func main() {
 	localIP := getLocalIP()
 
 	// 有 deploy.conf → 安装模式
-	if serverURL, err := loadDeployConf(); err == nil {
-		token := generateToken()
+	if serverURL, tokenFromConf, enrollSecret, err := loadDeployConf(); err == nil {
+		token := tokenFromConf
+		if token == "" {
+			token = generateToken()
+		}
 		fmt.Println("============================================")
 		fmt.Println("  LAN Agent 局域网管理系统 - 安装程序")
 		fmt.Println("============================================")
@@ -630,7 +652,7 @@ func main() {
 		fmt.Println()
 
 		fmt.Println("正在安装 LAN Agent 服务...")
-		if err := installService(serverURL, token); err != nil {
+		if err := installService(serverURL, token, enrollSecret); err != nil {
 			fmt.Println()
 			fmt.Printf("[安装失败] %v\n", err)
 			fmt.Println()
@@ -647,7 +669,7 @@ func main() {
 		fmt.Println("============================================")
 
 		// 立即发送心跳通知管理端更新token
-		cfg := &Config{ServerURL: serverURL, Token: token}
+		cfg := &Config{ServerURL: serverURL, Token: token, EnrollSecret: enrollSecret}
 		if err := sendHeartbeat(cfg, "online"); err != nil {
 			fmt.Printf("  (心跳通知失败: %v，服务启动后会自动重试)\n", err)
 		} else {

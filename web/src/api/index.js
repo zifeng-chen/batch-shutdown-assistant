@@ -14,8 +14,11 @@ api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401) {
-      localStorage.removeItem('token')
-      window.location.href = '/login'
+      // 登录页自身（如版本号探测）返回 401 时不得重定向，否则会造成无限刷新
+      if (window.location.pathname !== '/login') {
+        localStorage.removeItem('token')
+        window.location.href = '/login'
+      }
     }
     return Promise.reject(err)
   }
@@ -25,7 +28,7 @@ export const authApi = {
   login: (data) => api.post('/auth/login', data),
   me: () => api.get('/auth/me'),
   changePassword: (old_password, new_password) =>
-    api.post('/auth/change-password', null, { params: { old_password, new_password } }),
+    api.post('/auth/change-password', { old_password, new_password }),
 }
 
 export const deviceApi = {
@@ -42,8 +45,10 @@ export const deviceApi = {
     return api.post('/devices/import/csv', fd)
   },
   importIpRange: (startIp, endIp, groupName) =>
-    api.post('/devices/import/ip-range', null, {
-      params: { start_ip: startIp, end_ip: endIp, group_name: groupName || '' },
+    api.post('/devices/import/ip-range', {
+      start_ip: startIp,
+      end_ip: endIp,
+      group_name: groupName || '',
     }),
 }
 
@@ -59,7 +64,7 @@ export const auditApi = {
 }
 
 export const deployApi = {
-  generateToken: (data) => api.post('/deploy/generate-token', null, { params: data }),
+  generateToken: (data) => api.post('/deploy/generate-token', data),
   downloadPackage: (deviceIds) =>
     api.post('/deploy/package', { device_ids: deviceIds || [] }, { responseType: 'blob' }),
 }

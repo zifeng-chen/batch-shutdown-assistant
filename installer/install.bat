@@ -34,6 +34,10 @@ echo.
 echo 请输入设备Token（在管理端添加设备时获取）
 set /p TOKEN=设备Token: 
 
+echo.
+echo 请输入注册密钥（管理端生成安装包时提供，通常为 enroll-<密钥>）
+set /p ENROLL=注册密钥: 
+
 if "%SERVER_URL%"=="" (
     echo [错误] 服务器地址不能为空
     pause
@@ -41,6 +45,11 @@ if "%SERVER_URL%"=="" (
 )
 if "%TOKEN%"=="" (
     echo [错误] Token不能为空
+    pause
+    exit /b 1
+)
+if "%ENROLL%"=="" (
+    echo [错误] 注册密钥不能为空，否则设备无法接入管理端
     pause
     exit /b 1
 )
@@ -75,7 +84,7 @@ if %ERRORLEVEL% neq 0 (
 :: 安装并启动服务
 echo.
 echo 正在安装服务...
-"C:\Program Files\LanAgent\LanAgent.exe" /install /server=%SERVER_URL% /token=%TOKEN%
+"C:\Program Files\LanAgent\LanAgent.exe" /install /server=%SERVER_URL% /token=%TOKEN% /enroll=%ENROLL%
 if %ERRORLEVEL% neq 0 (
     echo [错误] 服务安装失败
     pause

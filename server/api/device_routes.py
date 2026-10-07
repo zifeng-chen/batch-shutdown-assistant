@@ -1,8 +1,9 @@
+import ipaddress
 import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete as sql_delete
 
@@ -14,6 +15,14 @@ from api.websocket_manager import manager
 from config import now_bjt
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
+
+
+def ip_sort_key(device: "Device"):
+    """IP 数值排序键；非法或缺失 IP 排到末尾，并按 hostname 稳定次级排序"""
+    try:
+        return (0, int(ipaddress.IPv4Address(device.ip)), device.hostname or "")
+    except (ipaddress.AddressValueError, ValueError, TypeError):
+        return (1, 0, device.hostname or "")
 
 
 class DeviceCreate(BaseModel):
@@ -40,8 +49,20 @@ class DeviceResponse(BaseModel):
     last_heartbeat: datetime | None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    # 硬件 / 系统信息
+    cpu_model: str | None = None
+    cpu_cores: int | None = None
+    memory_total_mb: int | None = None
+    disk_total_gb: int | None = None
+    disk_free_gb: int | None = None
+    os_version: str | None = None
+    serial_number: str | None = None
+    mac_address: str | None = None
+    manufacturer: str | None = None
+    model: str | None = None
+    sysinfo_updated_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 @router.get("", response_model=list[DeviceResponse])
@@ -50,7 +71,7 @@ async def list_devices(
     group: str | None = None,
     search: str | None = None,
     page: int = Query(1, ge=1),
-    size: int = Query(50, ge=1, le=200),
+    size: int = Query(500, ge=1, le=5000),
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(get_current_user),
 ):
@@ -65,21 +86,13 @@ async def list_devices(
             (Device.hostname.ilike(f"%{search}%")) | (Device.ip.ilike(f"%{search}%"))
         )
 
-    query = query.offset((page - 1) * size).limit(size)
-
+    # 按 IP 数值排序（跨网段正确），在 Python 层排序以确保与 SQL 方言无关
+    query = query.order_by(None)
     result = await db.execute(query)
-    devices_list = result.scalars().all()
+    devices = sorted(result.scalars().all(), key=ip_sort_key)
 
-    # 按IP地址数值排序
-    import ipaddress as _ip
-    def ip_sort_key(d):
-        try:
-            return int(_ip.IPv4Address(d.ip)) if d.ip else 0
-        except Exception:
-            return 0
-    devices_list.sort(key=ip_sort_key)
-
-    return devices_list
+    start = (page - 1) * size
+    return devices[start:start + size]
 
 
 @router.post("", response_model=DeviceResponse)
@@ -139,6 +152,8 @@ async def update_device(
 
     if payload.hostname is not None:
         device.hostname = payload.hostname
+        # 记录用户手动命名，避免被 Agent 心跳上报的本机名覆盖
+        device.hostname_locked = True
     if payload.ip is not None:
         device.ip = payload.ip
     if payload.group_name is not None:

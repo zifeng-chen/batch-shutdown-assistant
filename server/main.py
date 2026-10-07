@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 from database import init_db, async_session
 from models.models import User, Device, DeviceStatus
 from api.auth import hash_password
-from config import now_bjt, HEARTBEAT_TIMEOUT_SECONDS
+from config import now_bjt, HEARTBEAT_TIMEOUT_SECONDS, SECRET_KEY, APP_VERSION
 from api.agent_routes import router as agent_router
 from api.device_routes import router as device_router
 from api.task_routes import router as task_router
@@ -49,12 +49,12 @@ async def heartbeat_timeout_checker():
     while True:
         await asyncio.sleep(10)
         try:
-            from datetime import timedelta, datetime as dt
+            from datetime import timedelta
             from sqlalchemy import text
-            cutoff = (dt.now() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)).strftime('%Y-%m-%d %H:%M:%S')
+            cutoff = (now_bjt() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)).strftime('%Y-%m-%d %H:%M:%S')
             async with async_session() as db:
                 result = await db.execute(
-                    text("UPDATE devices SET status = 'OFFLINE' WHERE status = 'ONLINE' AND last_heartbeat < :cutoff"),
+                    text("UPDATE devices SET status = 'offline' WHERE status = 'online' AND last_heartbeat < :cutoff"),
                     {"cutoff": cutoff}
                 )
                 if result.rowcount > 0:
@@ -66,6 +66,10 @@ async def heartbeat_timeout_checker():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if SECRET_KEY == "change-me-in-production":
+        logging.warning(
+            "⚠️ 正在使用默认 SECRET_KEY，存在安全风险！请设置环境变量 LANAGENT_SECRET 后重启。"
+        )
     await init_db()
     await ensure_default_admin()
     task = asyncio.create_task(heartbeat_timeout_checker())
@@ -74,7 +78,7 @@ async def lifespan(app: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title="LAN Agent Manager", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="LAN Agent Manager", version=APP_VERSION, lifespan=lifespan)
 
 app.include_router(auth_router)
 app.include_router(agent_router)
@@ -99,12 +103,15 @@ async def health():
 
 @app.get("/{full_path:path}")
 async def serve_spa(request: Request, full_path: str):
-    file_path = os.path.join(STATIC_DIR, full_path)
-    if full_path and os.path.isfile(file_path):
-        resp = FileResponse(file_path)
-        resp.headers["Cache-Control"] = "no-cache"
-        return resp
-    index_path = os.path.join(STATIC_DIR, "index.html")
+    static_root = os.path.realpath(STATIC_DIR)
+    if full_path:
+        candidate = os.path.realpath(os.path.join(static_root, full_path))
+        # 防止 ../ 或编码变体逃逸出静态目录
+        if os.path.commonpath([candidate, static_root]) == static_root and os.path.isfile(candidate):
+            resp = FileResponse(candidate)
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
+    index_path = os.path.join(static_root, "index.html")
     if os.path.isfile(index_path):
         resp = FileResponse(index_path)
         resp.headers["Cache-Control"] = "no-cache"

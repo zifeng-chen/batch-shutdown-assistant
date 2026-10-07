@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 from api.auth import get_current_user
-from config import BASE_DIR
+from config import BASE_DIR, APP_VERSION
 
 router = APIRouter(prefix="/api/upgrade", tags=["upgrade"])
 
@@ -48,25 +48,33 @@ async def upload_agent_exe(
 
 @router.get("/file/{filename}")
 async def download_agent_exe(filename: str):
-    path = os.path.join(UPLOAD_DIR, filename)
+    # 仅允许纯文件名，防止 ../ 路径穿越
+    safe_name = os.path.basename(filename)
+    if safe_name != filename or not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    path = os.path.realpath(os.path.join(UPLOAD_DIR, safe_name))
+    upload_root = os.path.realpath(UPLOAD_DIR)
+    if os.path.commonpath([path, upload_root]) != upload_root:
+        raise HTTPException(status_code=400, detail="Invalid filename")
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path, media_type="application/octet-stream")
 
 
 @router.get("/latest")
-async def get_latest_agent(_: dict = Depends(get_current_user)):
+async def get_latest_agent():
     """返回服务器上最新的 Agent exe 版本号（从 exe 二进制中提取）"""
+    # 该接口仅返回版本号与文件大小，不含敏感信息；
+    # 且登录页在未鉴权时也会调用它，故不能要求鉴权，否则会触发 401 重定向死循环。
     agent_path = os.path.join(os.path.dirname(BASE_DIR), "agent", "LanAgent.exe")
     if not os.path.isfile(agent_path):
         raise HTTPException(status_code=404, detail="Agent exe not found on server")
     size = os.path.getsize(agent_path)
 
-    version = os.environ.get("LANAGENT_VERSION", "")
+    version = _extract_version_from_exe(agent_path)
     if not version:
-        version = _extract_version_from_exe(agent_path)
-    if not version:
-        version = "unknown"
+        version = APP_VERSION
 
     return JSONResponse({"version": version, "size": size}, headers={"Cache-Control": "no-store"})
 

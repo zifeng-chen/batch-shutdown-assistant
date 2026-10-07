@@ -11,6 +11,7 @@ from sqlalchemy import select
 from database import get_db
 from models.models import Device, DeviceStatus
 from api.auth import get_current_user
+from api.agent_routes import _enroll_secret
 from api.audit import log_audit
 from config import BASE_DIR
 import os
@@ -23,14 +24,21 @@ class DeployPackageRequest(BaseModel):
     group_name: str | None = None
 
 
+class GenerateTokenRequest(BaseModel):
+    hostname: str = ""
+    ip: str = ""
+    group_name: str = ""
+
+
 @router.post("/generate-token")
 async def generate_device_token(
-    hostname: str = "",
-    ip: str = "",
-    group_name: str = "",
+    payload: GenerateTokenRequest,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
+    hostname = payload.hostname
+    ip = payload.ip
+    group_name = payload.group_name
     device = Device(
         id=str(uuid.uuid4()),
         hostname=hostname or None,
@@ -92,7 +100,13 @@ async def download_deploy_package(
     if not os.path.isfile(agent_exe_path):
         raise HTTPException(status_code=500, detail="LanAgent.exe not found on server")
 
-    deploy_conf = f"# LAN Agent deploy config\nserver={server_url}\n"
+    # 安装包需携带注册密钥，否则新设备无法完成首次注册
+    enroll_secret = _enroll_secret()
+    deploy_conf = (
+        f"# LAN Agent deploy config\n"
+        f"server={server_url}\n"
+        f"enroll={enroll_secret}\n"
+    )
 
     readme_txt = (
         "========================================\n"
@@ -124,6 +138,7 @@ async def download_deploy_package(
         "- 安装后服务开机自启，无需手动操作\n"
         "- 覆盖安装会自动停止旧服务、替换文件、重启服务\n"
         "- deploy.conf 文件不要删除，服务运行需要读取该文件\n"
+        "- deploy.conf 内含注册密钥，请勿外传；管理端更换密钥后需重新生成安装包\n"
         "\n"
         "========================================\n"
     )

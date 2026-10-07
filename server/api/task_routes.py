@@ -1,10 +1,12 @@
+import asyncio
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
-from config import now_bjt
+from config import now_bjt, MAX_CONCURRENT_TASKS
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
@@ -15,6 +17,11 @@ from api.auth import get_current_user
 from api.audit import log_audit
 
 UPGRADE_TIMEOUT_SECONDS = 300
+
+logger = logging.getLogger(__name__)
+
+# 限制同时下发的设备数量，避免批量任务打爆服务端与 Agent
+_DISPATCH_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -32,8 +39,7 @@ class TaskResponse(BaseModel):
     params: str | None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 @router.post("", response_model=TaskResponse)
@@ -42,9 +48,14 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
+    try:
+        task_type = TaskType(payload.task_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"不支持的任务类型: {payload.task_type}")
+
     task = Task(
         id=str(uuid.uuid4()),
-        task_type=TaskType(payload.task_type),
+        task_type=task_type,
         status=TaskStatus.PENDING,
         params=json.dumps(payload.params) if payload.params else None,
     )
@@ -67,21 +78,33 @@ async def create_task(
     await db.commit()
 
     sent_count = 0
-    for tr in task_results:
+
+    async def _dispatch(tr: TaskResult, params: dict | None):
         command = {
             "id": tr.id,
-            "action": payload.task_type,
-            "params": payload.params or {},
+            "action": task_type.value,
+            "params": params or {},
         }
-        success = await manager.send_command(tr.device_id, command)
+        async with _DISPATCH_SEMAPHORE:
+            success = await manager.send_command(tr.device_id, command)
         if success:
             tr.status = "sent"
             tr.started_at = now_bjt()
+            return True
+        tr.status = "failed"
+        tr.output = "Agent offline"
+        tr.finished_at = now_bjt()
+        return False
+
+    outcomes = await asyncio.gather(
+        *[_dispatch(tr, payload.params) for tr in task_results],
+        return_exceptions=True,
+    )
+    for outcome in outcomes:
+        if outcome is True:
             sent_count += 1
-        else:
-            tr.status = "failed"
-            tr.output = "Agent offline"
-            tr.finished_at = now_bjt()
+        elif isinstance(outcome, Exception):
+            logger.exception("Dispatch failed: %s", outcome)
 
     await db.commit()
 
@@ -96,6 +119,22 @@ async def create_task(
     return task
 
 
+def _task_description(task_type, params: dict) -> str:
+    """生成任务的人类可读描述，列表与详情接口共用"""
+    if task_type == TaskType.UPGRADE:
+        return f"升级到 v{params.get('version', '?')}"
+    return {
+        TaskType.SYSPREP: "Sysprep 关机",
+        TaskType.SYSPREP_REBOOT: "Sysprep 重启",
+        TaskType.HOSTMSG: "弹出信息提示",
+        TaskType.SYSINFO: "采集设备信息",
+    }.get(task_type) or (
+        f"分发文件 {params.get('filename', '')}".strip()
+        if task_type == TaskType.FILE_PUSH
+        else str(task_type)
+    )
+
+
 @router.get("")
 async def list_tasks(
     db: AsyncSession = Depends(get_db),
@@ -106,34 +145,26 @@ async def list_tasks(
     )
     tasks = result.scalars().all()
 
+    task_ids = [t.id for t in tasks]
+    # 一次性取回所有结果与设备IP，避免 N+1
+    results_map: dict[str, list[str]] = {tid: [] for tid in task_ids}
+    if task_ids:
+        rows = await db.execute(
+            select(TaskResult.task_id, Device.ip)
+            .join(Device, Device.id == TaskResult.device_id, isouter=True)
+            .where(TaskResult.task_id.in_(task_ids))
+        )
+        for tid, ip in rows.all():
+            if ip:
+                results_map.setdefault(tid, []).append(ip)
+
     task_list = []
     for t in tasks:
-        results = await db.execute(
-            select(TaskResult).where(TaskResult.task_id == t.id)
-        )
-        task_results = results.scalars().all()
-
-        device_ips = []
-        for tr in task_results:
-            dev_result = await db.execute(
-                select(Device.ip).where(Device.id == tr.device_id)
-            )
-            dev = dev_result.scalar_one_or_none()
-            if dev:
-                device_ips.append(dev)
+        device_ips = results_map.get(t.id, [])
 
         # 构造操作描述
-        desc = ""
         params = json.loads(t.params) if t.params else {}
-        if t.task_type == TaskType.UPGRADE:
-            ver = params.get("version", "?")
-            desc = f"升级到 v{ver}"
-        elif t.task_type == TaskType.SYSPREP:
-            desc = "Sysprep 关机"
-        elif t.task_type == TaskType.SYSPREP_REBOOT:
-            desc = "Sysprep 重启"
-        else:
-            desc = str(t.task_type)
+        desc = _task_description(t.task_type, params)
 
         task_list.append({
             "id": t.id,
@@ -177,17 +208,21 @@ async def get_task(
             task.status = TaskStatus.FAILED
             await db.commit()
 
-    # 查询每个结果对应的设备IP
+    # 一次性取回设备IP，避免 N+1
+    device_ids = [r.device_id for r in task_results]
+    ip_map: dict[str, str] = {}
+    if device_ids:
+        rows = await db.execute(
+            select(Device.id, Device.ip).where(Device.id.in_(device_ids))
+        )
+        ip_map = {did: ip for did, ip in rows.all()}
+
     results_with_ip = []
     for r in task_results:
-        dev_result = await db.execute(
-            select(Device.ip).where(Device.id == r.device_id)
-        )
-        dev_ip = dev_result.scalar_one_or_none()
         results_with_ip.append({
             "id": r.id,
             "device_id": r.device_id,
-            "device_ip": dev_ip or r.device_id,
+            "device_ip": ip_map.get(r.device_id) or r.device_id,
             "status": r.status,
             "output": r.output,
             "started_at": r.started_at,
@@ -198,6 +233,9 @@ async def get_task(
         "id": task.id,
         "task_type": task.task_type,
         "status": task.status,
+        "description": _task_description(
+            task.task_type, json.loads(task.params) if task.params else {}
+        ),
         "params": task.params,
         "created_at": task.created_at,
         "results": results_with_ip,
