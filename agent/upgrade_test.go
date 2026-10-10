@@ -79,6 +79,34 @@ func TestBuildUpgradeBat_LogsEverywhere(t *testing.T) {
 	}
 }
 
+// 回归防护：LOG 变量必须用 set "LOG=..." 的标准写法。
+// 旧写法 set LOG="..." 会把引号存进变量，导致 >> "%LOG%" 展开异常。
+func TestBuildUpgradeBat_LogVarQuotedCorrectly(t *testing.T) {
+	bat := buildUpgradeBat("d", "b", "n", "bat", "log")
+	if !strings.Contains(bat, `set "LOG=`) {
+		t.Error(`LOG 变量应使用 set "LOG=..." 写法`)
+	}
+	if strings.Contains(bat, `set LOG="`) {
+		t.Error(`不应使用会引入多余引号的 set LOG="..." 写法`)
+	}
+}
+
+// 回归防护：升级脚本必须以脱离进程树的方式直接启动，
+// 不能再依赖嵌套引号的 PowerShell Start-Process（曾导致脚本静默不执行）。
+func TestDetachedUpgradeAttr_UsesNativeFlags(t *testing.T) {
+	a := detachedUpgradeAttr()
+	if a == nil {
+		t.Fatal("detachedUpgradeAttr 不应返回 nil")
+	}
+	// DETACHED_PROCESS(0x8) 必须置位，脚本才能脱离 Agent 进程树
+	if a.CreationFlags&0x00000008 == 0 {
+		t.Error("缺少 DETACHED_PROCESS 标志，脚本可能随 Agent 退出被杀")
+	}
+	if !a.HideWindow {
+		t.Error("应隐藏窗口避免弹窗")
+	}
+}
+
 // ---------- PE 校验 ----------
 
 func TestIsPEExecutable_ValidMZ(t *testing.T) {

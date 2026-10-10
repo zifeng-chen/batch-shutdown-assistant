@@ -115,54 +115,54 @@ func isPEExecutable(path string) bool {
 func buildUpgradeBat(destExe, backupExe, newExe, batPath, logPath string) string {
 	return fmt.Sprintf(`@echo off
 setlocal
-set LOG="%s"
-echo [%%date%% %%time%%] ===== upgrade started ===== >> %%LOG%%
+set "LOG=%s"
+echo [%%date%% %%time%%] ===== upgrade started ===== >> "%%LOG%%"
 
 rem ---- 1. 停止服务，释放 exe 占用 ----
-sc stop LanAgent >> %%LOG%% 2>&1
+sc stop LanAgent >> "%%LOG%%" 2>&1
 ping -n 4 127.0.0.1 > nul 2>&1
 
 rem ---- 2. 备份旧版本 ----
 if exist "%s" del /f /q "%s" > nul 2>&1
-move /Y "%s" "%s" >> %%LOG%% 2>&1
+move /Y "%s" "%s" >> "%%LOG%%" 2>&1
 if not exist "%s" (
-  echo [%%date%% %%time%%] ERROR: backup old exe failed >> %%LOG%%
+  echo [%%date%% %%time%%] ERROR: backup old exe failed >> "%%LOG%%"
   goto :rollback_failed
 )
 
 rem ---- 3. 写入新版本 ----
-copy /Y "%s" "%s" >> %%LOG%% 2>&1
+copy /Y "%s" "%s" >> "%%LOG%%" 2>&1
 if not exist "%s" (
-  echo [%%date%% %%time%%] ERROR: copy new exe failed >> %%LOG%%
+  echo [%%date%% %%time%%] ERROR: copy new exe failed >> "%%LOG%%"
   goto :rollback
 )
 
 rem ---- 4. 启动服务并校验 ----
-sc start LanAgent >> %%LOG%% 2>&1
-ping -n 5 127.0.0.1 > nul 2>&1
+sc start LanAgent >> "%%LOG%%" 2>&1
+ping -n 6 127.0.0.1 > nul 2>&1
 sc query LanAgent | findstr /C:"RUNNING" > nul 2>&1
 if errorlevel 1 (
-  echo [%%date%% %%time%%] ERROR: service not RUNNING, rolling back >> %%LOG%%
+  echo [%%date%% %%time%%] ERROR: service not RUNNING, rolling back >> "%%LOG%%"
   goto :rollback
 )
 
-echo [%%date%% %%time%%] upgrade SUCCESS >> %%LOG%%
+echo [%%date%% %%time%%] upgrade SUCCESS >> "%%LOG%%"
 del /f /q "%s" > nul 2>&1
 goto :done
 
 :rollback
-sc stop LanAgent >> %%LOG%% 2>&1
+sc stop LanAgent >> "%%LOG%%" 2>&1
 ping -n 4 127.0.0.1 > nul 2>&1
-copy /Y "%s" "%s" >> %%LOG%% 2>&1
-sc start LanAgent >> %%LOG%% 2>&1
-echo [%%date%% %%time%%] rolled back to previous version >> %%LOG%%
+copy /Y "%s" "%s" >> "%%LOG%%" 2>&1
+sc start LanAgent >> "%%LOG%%" 2>&1
+echo [%%date%% %%time%%] rolled back to previous version >> "%%LOG%%"
 goto :done
 
 :rollback_failed
-echo [%%date%% %%time%%] no backup available, manual intervention required >> %%LOG%%
+echo [%%date%% %%time%%] no backup available, manual intervention required >> "%%LOG%%"
 
 :done
-echo [%%date%% %%time%%] ===== upgrade finished ===== >> %%LOG%%
+echo [%%date%% %%time%%] ===== upgrade finished ===== >> "%%LOG%%"
 del /f /q "%s" > nul 2>&1
 exit /b 0
 `,
@@ -184,7 +184,7 @@ exit /b 0
 
 // startUpgrade 执行升级：下载 → 生成脚本 → 脱离父进程启动脚本 → 返回。
 //
-// 关键：使用 PowerShell 的 Start-Process 让脚本脱离当前进程树运行，
+// 关键：用 DETACHED_PROCESS 让脚本脱离当前进程树运行，
 // 这样 Agent 稍后退出（或被 SCM 终止）不会连带杀死升级脚本。
 func startUpgrade(cfg *Config, url, version string) error {
 	appendUpgradeLog("upgrade requested: version=%s url=%s", version, url)
@@ -214,33 +214,44 @@ func startUpgrade(cfg *Config, url, version string) error {
 	}
 	appendUpgradeLog("upgrade script written: %s", batPath)
 
-	// 用 Start-Process 启动，使脚本独立于本进程；-WindowStyle Hidden 避免闪窗
-	psCmd := fmt.Sprintf(
-		`Start-Process -FilePath "cmd.exe" -ArgumentList '/c','"%s"' -WindowStyle Hidden`,
-		batPath,
-	)
-	c := exec.Command("powershell", "-NoProfile", "-NonInteractive",
-		"-ExecutionPolicy", "Bypass", "-Command", psCmd)
-	c.SysProcAttr = hiddenWindowAttr()
+	// 直接以脱离进程树的方式启动 bat。
+	//
+	// 旧实现用 PowerShell 的 Start-Process -ArgumentList '/c','"path"'，嵌套引号在
+	// cmd.exe 的 /c 解析规则下会失效，导致脚本静默不执行（升级"成功"但版本不变）。
+	// 这里改为直接 exec cmd /c，由 Go 负责参数传递，并用 DETACHED_PROCESS 让脚本
+	// 脱离本进程，避免 Agent 退出时连带杀死脚本。
+	c := exec.Command("cmd", "/c", batPath)
+	c.Dir = filepath.Dir(batPath)
+	c.SysProcAttr = detachedUpgradeAttr()
 
-	if err := c.Run(); err != nil {
+	if err := c.Start(); err != nil {
 		appendUpgradeLog("launch upgrade script failed: %v", err)
 		return fmt.Errorf("启动升级脚本失败: %w", err)
 	}
+	// 不 Wait：脚本需在 Agent 退出后继续运行；交由 DETACHED_PROCESS 独立存活。
+	_ = c.Process.Release()
 
 	appendUpgradeLog("upgrade script launched, agent will exit")
 	return nil
 }
 
-// cleanupUpgradeArtifacts 清理可能残留的升级临时文件（服务启动时调用）
+// cleanupUpgradeArtifacts 清理可能残留的升级临时文件（服务启动时调用）。
+// 只清理"较旧"的残留（>5 分钟），避免误删刚启动、尚未执行完的升级脚本。
 func cleanupUpgradeArtifacts() {
 	tmpNew := filepath.Join(os.TempDir(), newExeName)
 	tmpBat := filepath.Join(os.TempDir(), upgradeBatName)
+	cutoff := time.Now().Add(-5 * time.Minute)
 	for _, p := range []string{tmpNew, tmpBat} {
-		if _, err := os.Stat(p); err == nil {
-			if err := os.Remove(p); err == nil {
-				log.Printf("[upgrade] cleaned leftover %s", p)
-			}
+		fi, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if fi.ModTime().After(cutoff) {
+			// 近期产生的文件可能是正在执行的升级脚本，跳过
+			continue
+		}
+		if err := os.Remove(p); err == nil {
+			log.Printf("[upgrade] cleaned leftover %s", p)
 		}
 	}
 }
