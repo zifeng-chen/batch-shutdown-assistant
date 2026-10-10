@@ -54,9 +54,10 @@ async def heartbeat_timeout_checker():
             from sqlalchemy import text
             cutoff = (now_bjt() - timedelta(seconds=HEARTBEAT_TIMEOUT_SECONDS)).strftime('%Y-%m-%d %H:%M:%S')
             async with async_session() as db:
+                # 原生 SQL 不走 Enum 类型处理器，须用 .name 匹配库中存储的枚举成员名（大写）
                 result = await db.execute(
-                    text("UPDATE devices SET status = 'offline' WHERE status = 'online' AND last_heartbeat < :cutoff"),
-                    {"cutoff": cutoff}
+                    text("UPDATE devices SET status = :offline WHERE status = :online AND last_heartbeat < :cutoff"),
+                    {"offline": DeviceStatus.OFFLINE.name, "online": DeviceStatus.ONLINE.name, "cutoff": cutoff}
                 )
                 if result.rowcount > 0:
                     await db.commit()
