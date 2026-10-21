@@ -56,6 +56,24 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 
 > **注意：** 管理端会自动检测宿主机局域网 IP 写入安装包，无需手动配置。更换服务器或 IP 后只需重新生成安装包即可。
 
+> ⚠️ **安全提示：** `admin123` 与 `change-me-in-production` 仅为开箱占位值，**严禁用于生产环境**。部署前请务必完成下方《部署安全清单》。
+
+### 部署安全清单
+
+上线前请逐项确认：
+
+1. **修改默认密码** —— 首次登录后立即在「设置」中修改 `admin` 密码，或直接更新数据库中的密码哈希
+2. **设置强密钥** —— 为 systemd 服务配置 `LANAGENT_SECRET`（JWT 签名密钥），使用随机值，例如：
+   ```bash
+   openssl rand -hex 32
+   ```
+   > 未设置时程序会回退到默认值 `change-me-in-production`，攻击者可据此伪造 JWT，**必须覆盖**。
+3. **设置入网密钥** —— 配置 `LANAGENT_ENROLL_SECRET`，避免任意设备私自注册进管理端
+4. **限制监听范围** —— 服务建议只监听内网地址（如 `192.168.x.x`），不要暴露到公网
+5. **确认端口策略** —— Agent 主动出站连接管理端，无需在防火墙开放入站端口；若必须开放，仅限内网来源
+6. **保护数据库与上传目录** —— 数据库文件、`uploads/` 目录仅允许服务账户读写（`chmod 600` / `700`）
+7. **启用 HTTPS（可选）** —— 若管理端跨网段访问，建议在前置 Nginx 上配置 TLS 证书，避免 Token 明文传输
+
 ### 2. 生产环境部署（systemd 守护）
 
 ```ini
@@ -180,12 +198,17 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.buildVersion=1.4.1" -
 ## 安全设计
 
 - JWT 认证保护所有管理端 API
-- WebSocket Agent 连接需 Token 验证
+- WebSocket Agent 连接需 Token 验证，Token 比较使用恒定时间算法
 - 每台设备独立 UUID Token
 - 密码 bcrypt 哈希存储
+- 登录失败限流：按 (IP, 用户名) 计数，5 次锁定并指数退避
 - SQL 注入防护（ORM 参数化查询）
 - XML 注入防护（unattend.xml 转义）
+- Agent 升级 / 文件推送校验同源，拒绝第三方 URL
+- 文件推送路径限定在目标目录内，拒绝 `..` 与绝对路径
 - 部署包动态检测宿主机 IP，无硬编码
+
+> **默认凭证说明：** 代码中的 `admin123`（默认密码）与 `change-me-in-production`（默认 JWT 密钥）**仅用于开箱体验**，生产部署必须替换，详见上方《部署安全清单》。
 
 ## 环境要求
 
