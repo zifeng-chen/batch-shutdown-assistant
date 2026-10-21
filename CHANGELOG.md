@@ -1,5 +1,53 @@
 # 更新日志
 
+## v1.4.5 (2026-10-07)
+
+### 修复
+- **Agent 升级成功率**：升级批处理脚本的变量与路径全部加引号，避免路径含空格时重定向/参数解析失败；服务启动等待时间由 4s 延长至 6s
+- **升级脚本随 Agent 退出而中断**：`proc.go` 新增 `detachedUpgradeAttr`，使升级脚本脱离父进程与作业对象，Agent 退出后仍能独立完成 exe 替换与服务重启
+
+### 改进
+- 版本号统一升至 1.4.5（agent / server / web 三处）
+- 补充 `upgrade_test.go` 升级流程测试
+
+## v1.4.4 (2026-10-07)
+
+### 修复
+- **心跳超时巡检完全失效**：原生 SQL 硬编码小写 `status='online'/'offline'`，而 `Enum(DeviceStatus)` 在库中存储的是成员名大写 `ONLINE/OFFLINE`，SQLite 文本比较大小写敏感导致巡检 `UPDATE` 永远匹配 0 行。改用 `DeviceStatus.*.name` 绑定参数，与库中存储格式保持一致
+  - 现象：设备关机掉线后状态永远停留在 `ONLINE`，界面出现"假在线"僵尸设备
+
+## v1.4.3 (2026-10-07)
+
+### 安全
+- **Agent 侧加固**：
+  - `A-H1` 升级 / file_push 下载前校验 URL 必须与本管理服务器同源，拒绝第三方来源
+  - `A-M1` file_push 目标目录限定在 filesDir 之下，文件名拒绝 `..` 与绝对路径
+  - `A-H2` 删除硬编码 AES 密钥的死代码 `EncryptToken` / `DecryptToken`
+  - 新增 `validateServerURL` / `safeJoinUnder` 单元测试
+
+### 修复
+- **推送地址错误**：新增 `GET /api/deploy/server-url` 返回设备应访问的局域网地址；前端推送升级/文件改用该地址，修复浏览器以 `localhost` 打开时把 `localhost` 推给远端设备导致推送静默失败的问题
+
+## v1.4.2 (2026-10-07)
+
+### 安全（阶段1：对存量生产设备零影响）
+- **H3** 登录限流：按 (IP, 用户名) 失败计数，5 次锁定并指数退避
+- **H2-b** WebSocket token 改用 `hmac.compare_digest` 恒定时间比较
+- **M1** 任务下发过滤不存在的设备，记入 `skipped`
+- **M2** exe 上传校验 PE 头 + 500MB 上限
+- **M3** 上传目录保留 20 份 / 审计 180 天 / 输出截断 10 万字符 / 每日维护任务
+- **M5** SQLite 启用 WAL + `busy_timeout`
+- **L1** 前端 401 拦截器区分登录请求
+- **L2** 移除未使用的 `CORSMiddleware` 导入
+
+### 修复
+- **登录页无限刷新**：`/api/upgrade/latest` 去掉鉴权（仅返回版本号）；前端 401 拦截器在 `/login` 页不再强制重定向，切断自我刷新循环
+- **主机名被心跳覆盖**：新增 `hostname_locked` 标记，用户手动命名后不再被 Agent 心跳/恢复上报的本机名覆盖
+
+### 改进
+- 新增后端 pytest 与前端 vitest 测试
+- 更新构建脚本与前端产物
+
 ## v1.4.1 (2026-10-06)
 
 ### 修复

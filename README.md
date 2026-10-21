@@ -1,5 +1,7 @@
 # 批量关机助手
 
+> 版本 **v1.4.5** · [更新日志](CHANGELOG.md) · [MIT License](LICENSE)
+
 面向 Windows 11 家庭版的局域网批量管理系统，远程执行 Sysprep OOBE 关机/重启操作。
 
 ## 功能特性
@@ -118,15 +120,33 @@ GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -X main.buildVersion=1.4.1" -
 │   ├── heartbeat.go    # 5秒心跳、版本上报
 │   ├── handler.go      # 指令处理(sysprep/shutdown/upgrade/file_push/uninstall)
 │   ├── sysprep.go      # Sysprep 执行、Rearm 计数读取
+│   ├── upgrade.go      # 推送升级下载与自替换
+│   ├── proc.go         # 进程/服务操作（含脱离父进程的升级属性）
+│   ├── hostmsg.go      # 主机名与消息上报
+│   ├── netutil.go      # 网络工具（IP 探测等）
 │   └── config.go       # 配置读写
+├── installer/          # Windows 端安装/部署脚本
+│   ├── install.bat         # 交互式安装
+│   ├── silent-install.bat  # 静默安装
+│   ├── deploy.bat          # 批量下发安装
+│   └── uninstall.bat       # 卸载
 ├── server/             # Python FastAPI 后端
 │   ├── main.py         # 应用入口、SPA 服务、心跳超时检测
+│   ├── config.py       # 配置与版本号单一来源
+│   ├── database.py     # 数据库连接（SQLite + WAL）
 │   ├── api/            # REST + WebSocket 路由
 │   ├── models/         # SQLAlchemy 数据模型
+│   ├── scheduler/      # 定时任务（每日维护）
+│   ├── tests/          # pytest 后端测试
 │   └── static/         # 前端构建产物
 ├── web/                # Vue3 前端源码
-│   └── src/views/      # Dashboard/Devices/Tasks/Audit/Help/Login
-└── deploy/             # 部署文档
+│   ├── src/views/      # Dashboard/Devices/Tasks/Audit/Help/Login
+│   └── tests/          # vitest 前端测试
+├── deploy/             # 部署文档
+├── build.sh            # 一键构建脚本
+├── CHANGELOG.md        # 更新日志
+├── CODE_AUDIT_REPORT_2026-10-07.md          # 全量代码审计报告
+└── AGENT_SECURITY_AUDIT_L5_2026-10-07.md    # Agent 侧安全专项走查报告
 ```
 
 ## API 概览
