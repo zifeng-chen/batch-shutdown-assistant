@@ -2,9 +2,12 @@ import os
 from datetime import datetime, timezone, timedelta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 数据持久化目录；生产环境通过 LANAGENT_DATA_DIR 指向代码目录之外，避免更新代码时丢失数据
+DATA_DIR = os.environ.get("LANAGENT_DATA_DIR", BASE_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
 # 全局版本号唯一来源；可通过环境变量覆盖
-APP_VERSION = os.environ.get("LANAGENT_VERSION", "1.4.5")
-DATABASE_URL = f"sqlite+aiosqlite:///{os.path.join(BASE_DIR, 'lanagent.db')}"
+APP_VERSION = os.environ.get("LANAGENT_VERSION", "1.4.7")
+DATABASE_URL = f"sqlite+aiosqlite:///{os.path.join(DATA_DIR, 'lanagent.db')}"
 SECRET_KEY = os.environ.get("LANAGENT_SECRET", "change-me-in-production")
 # Agent 首次注册（enroll）所需的预共享密钥；未配置时按 SECRET_KEY 派生
 ENROLL_SECRET = os.environ.get("LANAGENT_ENROLL_SECRET", "")

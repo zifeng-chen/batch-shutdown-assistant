@@ -105,23 +105,51 @@ func isPEExecutable(path string) bool {
 	return head[0] == 'M' && head[1] == 'Z'
 }
 
+// waitServiceState 生成一段批处理：轮询 sc query 直到状态匹配。
+// maxSeconds 内未达状态则跳到 failLabel 判定失败（不静默继续）。
+func waitServiceState(label, state string, maxSeconds int, failLabel string) string {
+	return fmt.Sprintf(`
+rem ---- 等待服务状态变为 %s（最多 %d 秒）----
+set /a __wait=0
+:wait_%s
+sc query LanAgent | findstr /C:"%s" > nul 2>&1
+if not errorlevel 1 goto :state_%s_ok
+set /a __wait+=1
+if %%__wait%% GEQ %d (
+  echo [%%date%% %%time%%] ERROR: 等待 %s 超时(%d 秒) >> "%%LOG%%"
+  goto %s
+)
+ping -n 2 127.0.0.1 > nul 2>&1
+goto :wait_%s
+:state_%s_ok
+`,
+		state, maxSeconds, label,
+		state, label,
+		maxSeconds, label, maxSeconds,
+		failLabel,
+		label,
+		label,
+	)
+}
+
 // buildUpgradeBat 生成独立的升级批处理脚本。
 //
 // 设计要点（对应旧实现的缺陷）：
 //   - 不依赖 schtasks / timeout：这些在服务会话（Session 0）下不可靠
+//   - 停止服务后轮询等待状态真正变为 STOPPED：sc stop 是异步的，
+//     固定 ping 等待无法保证文件句柄已释放，会导致 move/copy 失败
 //   - 全程写日志，不再静默失败
 //   - 替换前备份旧版；新服务启动失败时自动回滚
 //   - 结束时自删除，避免残留
 func buildUpgradeBat(destExe, backupExe, newExe, batPath, logPath string) string {
 	return fmt.Sprintf(`@echo off
-setlocal
+setlocal enabledelayedexpansion
 set "LOG=%s"
 echo [%%date%% %%time%%] ===== upgrade started ===== >> "%%LOG%%"
 
 rem ---- 1. 停止服务，释放 exe 占用 ----
 sc stop LanAgent >> "%%LOG%%" 2>&1
-ping -n 4 127.0.0.1 > nul 2>&1
-
+%s
 rem ---- 2. 备份旧版本 ----
 if exist "%s" del /f /q "%s" > nul 2>&1
 move /Y "%s" "%s" >> "%%LOG%%" 2>&1
@@ -139,7 +167,7 @@ if not exist "%s" (
 
 rem ---- 4. 启动服务并校验 ----
 sc start LanAgent >> "%%LOG%%" 2>&1
-ping -n 6 127.0.0.1 > nul 2>&1
+%s
 sc query LanAgent | findstr /C:"RUNNING" > nul 2>&1
 if errorlevel 1 (
   echo [%%date%% %%time%%] ERROR: service not RUNNING, rolling back >> "%%LOG%%"
@@ -152,7 +180,7 @@ goto :done
 
 :rollback
 sc stop LanAgent >> "%%LOG%%" 2>&1
-ping -n 4 127.0.0.1 > nul 2>&1
+%s
 copy /Y "%s" "%s" >> "%%LOG%%" 2>&1
 sc start LanAgent >> "%%LOG%%" 2>&1
 echo [%%date%% %%time%%] rolled back to previous version >> "%%LOG%%"
@@ -168,16 +196,22 @@ exit /b 0
 `,
 		// 1) 日志路径
 		logPath,
-		// 2) 清理旧备份 + 备份当前 exe
+		// 2) 等待服务停止（超时则直接判定失败）
+		waitServiceState("stopped", "STOPPED", 60, ":rollback_failed"),
+		// 3) 清理旧备份 + 备份当前 exe
 		backupExe, backupExe,
 		destExe, backupExe, backupExe,
-		// 3) 写入新 exe
+		// 4) 写入新 exe
 		newExe, destExe, destExe,
-		// 4) 成功时删除临时新包
+		// 5) 等待服务启动（超时则回滚）
+		waitServiceState("running", "RUNNING", 30, ":rollback"),
+		// 6) 成功时删除临时新包
 		newExe,
-		// 5) 回滚：备份拷回目标
+		// 7) 回滚：先等停止
+		waitServiceState("rb_stopped", "STOPPED", 60, ":rollback_failed"),
+		// 8) 回滚：备份拷回目标
 		backupExe, destExe,
-		// 6) 脚本自删除
+		// 9) 脚本自删除
 		batPath,
 	)
 }

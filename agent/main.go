@@ -216,6 +216,18 @@ func installService(serverURL, token, enrollSecret string) error {
 	destExe := filepath.Join(installDir, "LanAgent.exe")
 	destCfg := filepath.Join(installDir, configFileName)
 
+	// 判断当前运行的程序是否已经位于目标安装路径。
+	// 若是（例如 reinstall.bat 先把新 exe 放到安装目录再从该目录运行），
+	// 则不能再次复制文件——复制自己会因文件被自身占用而失败。
+	// 注意：EvalSymlinks 失败会返回空串，必须排除空串，否则两个空串会被误判为相等。
+	selfExe, _ := os.Executable()
+	if resolved, e := filepath.EvalSymlinks(selfExe); e == nil {
+		selfExe = resolved
+	}
+	destResolved, destErr := filepath.EvalSymlinks(destExe)
+	alreadyInPlace := destErr == nil && selfExe != "" && destResolved != "" &&
+		strings.EqualFold(selfExe, destResolved)
+
 	cfg := &Config{
 		ServerURL:    serverURL,
 		Token:        token,
@@ -237,13 +249,28 @@ func installService(serverURL, token, enrollSecret string) error {
 	s, err := m.OpenService(serviceName)
 	if err == nil {
 		fmt.Println("[安装] 检测到已有 LAN Agent 服务，正在覆盖安装...")
-		s.Control(svc.Stop)
-		time.Sleep(2 * time.Second)
 
-		fmt.Println("[安装] 替换程序文件...")
-		if err := copyFile(exe, destExe); err != nil {
+		// 停止服务并等待其真正退出，释放 exe 文件句柄。
+		// sc stop 是异步指令：发送后立即返回，服务进程需数百毫秒到数秒才退出。
+		fmt.Println("[安装] 停止现有服务...")
+		if _, err := s.Control(svc.Stop); err != nil {
+			fmt.Printf("[安装] 停止服务指令返回: %v（服务可能已停止，继续）\n", err)
+		}
+		if err := waitServiceStopped(s, 30*time.Second); err != nil {
 			s.Close()
-			return fmt.Errorf("替换程序文件失败: %w", err)
+			return fmt.Errorf("停止现有服务失败: %w\n       请手动停止后重试，或以管理员身份运行 sc stop LanAgent", err)
+		}
+		fmt.Println("[安装] 服务已停止")
+
+		if alreadyInPlace {
+			// 程序已在安装目录：文件无需（也不能）再复制，直接启动即可
+			fmt.Println("[安装] 程序已在安装目录，跳过文件复制")
+		} else {
+			fmt.Println("[安装] 替换程序文件...")
+			if err := copyFileWithRetry(exe, destExe, 10); err != nil {
+				s.Close()
+				return fmt.Errorf("替换程序文件失败: %w\n       该文件正被占用（服务/杀软未释放），请稍后重试", err)
+			}
 		}
 
 		fmt.Println("[安装] 重启服务...")
@@ -256,9 +283,13 @@ func installService(serverURL, token, enrollSecret string) error {
 		return nil
 	}
 
-	fmt.Println("[安装] 复制程序文件到安装目录...")
-	if err := copyFile(exe, destExe); err != nil {
-		return fmt.Errorf("复制程序文件失败: %w", err)
+	if alreadyInPlace {
+		fmt.Println("[安装] 程序已在安装目录，跳过文件复制")
+	} else {
+		fmt.Println("[安装] 复制程序文件到安装目录...")
+		if err := copyFile(exe, destExe); err != nil {
+			return fmt.Errorf("复制程序文件失败: %w", err)
+		}
 	}
 
 	// 等待文件写入完成，避免杀毒软件锁定导致后续操作失败
@@ -280,7 +311,13 @@ func installService(serverURL, token, enrollSecret string) error {
 		log.Printf("[install] event log install warning: %v", err)
 	}
 
-	s.SetRecoveryActions([]mgr.RecoveryAction{}, 86400)
+	// 必须传入非空动作列表：x/sys 的 SetRecoveryActions 仅拒绝 nil，
+	// 传空切片会在内部 &actions[0] 处 panic（index out of range [0] with length 0）。
+	s.SetRecoveryActions([]mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
+	}, 86400)
 
 	fmt.Println("[安装] 启动服务...")
 	if err := s.Start(); err != nil {
@@ -303,6 +340,42 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0755)
+}
+
+// waitServiceStopped 轮询服务状态直到 STOPPED。
+// Windows 的停止指令是异步的，固定 sleep 无法保证进程已退出并释放 exe 句柄，
+// 必须轮询 Query 直到状态真正变为 Stopped。
+func waitServiceStopped(s *mgr.Service, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		st, err := s.Query()
+		if err != nil {
+			// 服务已被删除等情况同样视为已停止
+			return nil
+		}
+		if st.State == svc.Stopped {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("等待服务停止超时（当前状态: %d）", st.State)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+// copyFileWithRetry 在目标文件被占用时退避重试。
+// 服务/杀软可能短暂持有 exe 句柄，单次写入失败不代表最终失败。
+func copyFileWithRetry(src, dst string, attempts int) error {
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if err := copyFile(src, dst); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(time.Duration(500*(i+1)) * time.Millisecond)
+	}
+	return lastErr
 }
 
 // uninstallLog 负责把卸载过程逐步写入 U 盘项目 logs 目录，并同步输出到控制台。
@@ -526,28 +599,61 @@ func parseInstallArgs() (serverURL, token, enrollSecret string) {
 	return
 }
 
-func loadDeployConf() (serverURL, token, enrollSecret string, err error) {
+// deployConfCandidates 收集所有可能的 deploy.conf 位置。
+// UAC 提权运行时工作目录会变成 C:\Windows\System32，故不能只依赖 os.Getwd()。
+func deployConfCandidates() []string {
 	var candidates []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		candidates = append(candidates, p)
+	}
 
 	if exe, e := os.Executable(); e == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "deploy.conf"))
+		// exe 可能位于 U 盘的短路径/8.3 名称下，先解析真实路径再拼同级目录
+		if real, e2 := filepath.EvalSymlinks(exe); e2 == nil {
+			add(filepath.Join(filepath.Dir(real), "deploy.conf"))
+		}
+		dir := filepath.Dir(exe)
+		add(filepath.Join(dir, "deploy.conf"))
+		// 兼容 exe 位于子目录（如 应用软件\LanAgent-Deploy\bin）的场景
+		add(filepath.Join(filepath.Dir(dir), "deploy.conf"))
 	}
 	if wd, e := os.Getwd(); e == nil {
-		candidates = append(candidates, filepath.Join(wd, "deploy.conf"))
+		add(filepath.Join(wd, "deploy.conf"))
 	}
+	return candidates
+}
 
-	var data []byte
-	found := false
-	for _, path := range candidates {
-		d, e := os.ReadFile(path)
-		if e == nil {
-			data = d
-			found = true
-			break
+// readDeployConfFile 在候选路径中查找并读取 deploy.conf。
+// 首次运行于 U 盘时，杀毒软件实时扫描/卷挂载可能短暂锁定文件导致读取失败，
+// 故对全部候选路径做有限次重试。
+func readDeployConfFile() ([]byte, string, error) {
+	const attempts = 4
+	var lastErr error
+
+	for i := 0; i < attempts; i++ {
+		for _, path := range deployConfCandidates() {
+			d, e := os.ReadFile(path)
+			if e == nil {
+				return d, path, nil
+			}
+			lastErr = fmt.Errorf("%s: %w", path, e)
+		}
+		if i < attempts-1 {
+			time.Sleep(300 * time.Millisecond)
 		}
 	}
-	if !found {
-		return "", "", "", fmt.Errorf("deploy.conf not found in exe directory or working directory")
+	return nil, "", fmt.Errorf("deploy.conf 未找到或不可读（最后错误: %v）", lastErr)
+}
+
+func loadDeployConf() (serverURL, token, enrollSecret string, err error) {
+	data, _, err := readDeployConfFile()
+	if err != nil {
+		return "", "", "", err
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -590,19 +696,37 @@ func generateToken() string {
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
+	// 顶层兜底：任何未捕获的 panic 都必须先显示出来再退出，
+	// 避免双击/右键运行时窗口瞬间消失、用户看不到失败原因。
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println()
+			fmt.Println("============================================")
+			fmt.Printf("  [严重错误] 程序异常退出\n")
+			fmt.Printf("  %v\n", r)
+			fmt.Println("============================================")
+			pauseAndExit(1)
+		}
+	}()
+
+	runMain()
+}
+
+func runMain() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "/install":
 			serverURL, token, enrollSecret := parseInstallArgs()
 			if serverURL == "" || token == "" {
 				fmt.Fprintln(os.Stderr, "用法: LanAgent.exe /install /server=<地址> /token=<令牌> [/enroll=<注册密钥>]")
-				os.Exit(1)
+				pauseAndExit(1)
 			}
 			if err := installService(serverURL, token, enrollSecret); err != nil {
 				fmt.Fprintf(os.Stderr, "安装失败: %v\n", err)
-				os.Exit(1)
+				pauseAndExit(1)
 			}
 			fmt.Println("LAN Agent 服务安装并启动成功。")
+			pauseAndExit(0)
 			return
 
 		case "/silent":
@@ -619,6 +743,9 @@ func main() {
 				fmt.Fprintf(os.Stderr, "静默安装失败: %v\n", err)
 				os.Exit(1)
 			}
+			if err := resetPassword(); err != nil {
+				fmt.Fprintf(os.Stderr, "[提示] 自动清空密码未执行: %v\n", err)
+			}
 			cfg := &Config{ServerURL: serverURL, Token: token, EnrollSecret: enrollSecret}
 			_ = sendHeartbeat(cfg, "online")
 			return
@@ -629,6 +756,18 @@ func main() {
 				pauseAndExit(1)
 			}
 			fmt.Println("LAN Agent 已卸载成功。")
+			pauseAndExit(0)
+			return
+
+		case "/resetpwd":
+			if !isAdmin() {
+				fmt.Fprintln(os.Stderr, "错误: 请以管理员身份运行（右键 → 以管理员身份运行）")
+				pauseAndExit(1)
+			}
+			if err := resetPassword(); err != nil {
+				fmt.Fprintf(os.Stderr, "清空密码失败: %v\n", err)
+				pauseAndExit(1)
+			}
 			pauseAndExit(0)
 			return
 		}
@@ -662,6 +801,15 @@ func main() {
 			fmt.Println("  3. deploy.conf 配置有误")
 			pauseAndExit(1)
 		}
+
+		// 安装即以管理员身份清空当前账户密码。
+		// 工厂模式下账户本是空密码，旧版 Agent 的 unattend 会把它改成固定密码，
+		// 导致重启后提示「密码不正确」；此处先行归零，后续 Sysprep 也就不会改出问题。
+		fmt.Println()
+		if err := resetPassword(); err != nil {
+			fmt.Printf("[提示] 自动清空密码未执行: %v\n", err)
+			fmt.Println("       这不影响服务安装，可稍后右键 reset-password.bat 单独处理。")
+		}
 		fmt.Println()
 		fmt.Println("============================================")
 		fmt.Printf("  [成功] LAN Agent 已安装并启动\n")
@@ -683,10 +831,19 @@ func main() {
 	// 没有 deploy.conf → 检查是否作为 Windows 服务运行
 	isService, err := svc.IsWindowsService()
 	if err != nil {
-		// IsWindowsService 失败时，尝试直接以服务方式运行
-		log.Printf("IsWindowsService error: %v, trying service mode", err)
-		svc.Run(serviceName, &AgentService{})
-		return
+		// 探测失败时绝不能盲猜进入服务模式：svc.Run 在非服务上下文会立即返回，
+		// 导致窗口静默消失（U 盘首次运行、杀软 hook、提权瞬间都可能触发）。
+		fmt.Println()
+		fmt.Println("[错误] 无法确定运行环境，且未找到 deploy.conf。")
+		fmt.Printf("       探测失败: %v\n", err)
+		fmt.Println()
+		fmt.Println("请确认以下几点后重试:")
+		fmt.Println("  1. deploy.conf 与本程序(LanAgent.exe)在同一目录")
+		fmt.Println("  2. 右键 LanAgent.exe → 以管理员身份运行")
+		fmt.Println("  3. 若从 U 盘/压缩包运行，请先完整解压到本地磁盘再运行")
+		fmt.Println("  4. 暂时的杀毒软件占用可能失败，请稍等几秒后重试")
+		_ = isService
+		pauseAndExit(1)
 	}
 
 	if isService {

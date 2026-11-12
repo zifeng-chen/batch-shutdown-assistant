@@ -72,6 +72,7 @@
             <el-option label="Sysprep 重启" value="sysprep_reboot" />
             <el-option label="弹窗提示" value="hostmsg" />
             <el-option label="采集设备信息" value="sysinfo" />
+            <el-option label="清空账户密码" value="reset_pwd" />
           </el-select>
         </el-form-item>
         <el-form-item label="选择设备">

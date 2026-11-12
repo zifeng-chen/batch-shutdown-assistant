@@ -143,11 +143,31 @@ async def download_deploy_package(
         "\n"
         "5. 按回车键关闭窗口，安装完成\n"
         "\n"
+        "【已安装旧版本的升级方式】\n"
+        "\n"
+        "方式一（推荐，无需卸载）：\n"
+        "  右键点击 reinstall.bat → 以管理员身份运行\n"
+        "  脚本会自动停止旧服务、等待其完全退出、替换文件并启动新服务。\n"
+        "\n"
+        "方式二：直接右键 LanAgent.exe → 以管理员身份运行（覆盖安装）\n"
+        "\n"
         "【卸载步骤】\n"
         "\n"
         "1. 右键点击 uninstall.bat → 以管理员身份运行\n"
         "\n"
         "2. 等待显示卸载完成\n"
+        "\n"
+        "【密码被改、登录提示「密码不正确」的修复】\n"
+        "\n"
+        "若机器执行过旧版 Sysprep 后无法登录，用已知密码进入桌面后：\n"
+        "\n"
+        "1. 右键点击 reset-password.bat → 以管理员身份运行\n"
+        "\n"
+        "2. 输入 Y 确认\n"
+        "\n"
+        "3. 显示「密码已清空」后重启，即可空密码直接进桌面\n"
+        "\n"
+        "该脚本只清空当前登录账户的密码，不影响其他账户。\n"
         "\n"
         "【注意事项】\n"
         "\n"
@@ -183,6 +203,23 @@ async def download_deploy_package(
         readme_bytes = b"\xef\xbb\xbf" + readme_txt.encode("utf-8")
         zf.writestr("安装请阅读此文档.txt", readme_bytes)
         zf.writestr("uninstall.bat", uninstall_bat.encode("ascii"))
+        # 一键覆盖安装脚本：停服务→等待真正停止→替换文件→安装校验，
+        # 已装过旧版的设备可直接运行它完成升级，无需先卸载。
+        reinstall_src = os.path.join(os.path.dirname(BASE_DIR), "installer", "reinstall.bat")
+        if os.path.isfile(reinstall_src):
+            with open(reinstall_src, "rb") as f:
+                data = f.read()
+            # 统一为 CRLF，保证 Windows 下双击运行正常
+            data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            zf.writestr("reinstall.bat", data)
+
+        # 密码修复脚本：旧版 Agent 会改写账户密码导致登录失败，此脚本用于恢复空密码
+        resetpwd_src = os.path.join(os.path.dirname(BASE_DIR), "installer", "reset-password.bat")
+        if os.path.isfile(resetpwd_src):
+            with open(resetpwd_src, "rb") as f:
+                data = f.read()
+            data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            zf.writestr("reset-password.bat", data)
 
     buf.seek(0)
 

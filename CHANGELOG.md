@@ -1,5 +1,41 @@
 # 更新日志
 
+## v1.4.7 (2026-11-12)
+
+### 修复
+- **Sysprep 后登录提示「密码不正确」**：根因是 `generateUnattend` 写入的应答文件同时包含 `LocalAccounts`（固定密码 `ChangeMe@2024`）与只填 `Username` 的 `AutoLogon`，OOBE 阶段会把工厂模式下本为空密码的账户改写成固定密码，而自动登录又按空密码校验，导致登录失败且只能重置系统
+  - 应答文件不再写入 `UserAccounts` / `AutoLogon`：工厂模式（Ctrl+Shift+F3 审核模式）下账户已存在且为空密码，原样保留即可直接进桌面，无需关心账户名是 `Administrator` 还是 `LabAdmin`
+  - 顺带关闭 `SetupComplete.cmd` 里写死的 `AutoAdminLogon=0`，该注册表项会主动关闭自动登录，反而把人拦在登录界面
+- **应答文件路径不可靠**：由 `C:\Program Files\LanAgent\unattend.xml` 改为 `C:\Windows\System32\Sysprep\unattend.xml`，前者在 OOBE 阶段不一定可访问
+- **Sysprep 失败仍上报成功**：原代码用 `/quiet` 使 `CombinedOutput()` 永远拿不到输出，执行失败也返回 `success`，管理端显示的是虚假成功。改为执行后校验 `sysprep_succeeded.tag` 标志文件，缺失即判定失败并提示查看 `setuperr.log`
+- **`sysprep_reboot` 重复重启**：`/reboot` 已由 sysprep 自身发起重启，移除额外的 `executeReboot()` 调用
+
+### 新增
+- **清空账户密码**：新增 `LanAgent.exe /resetpwd` 参数与 `agent/password.go`
+  - 只清空当前登录的管理员账户，并校验其在 `Administrators` 组内；刻意不做批量清空，避免清错账户后无可用凭据
+  - 账户名解析兼容服务上下文：`%USERNAME%` 为 `SYSTEM` 时回退到 `wmic computersystem get username`，再回退到 `quser`
+  - **安装时自动执行**：正常运行（读取到 `deploy.conf`）与 `/silent` 静默安装均会在服务注册后自动清空，无需额外操作
+  - **管理端远程触发**：新增任务类型 `reset_pwd`，设备列表行内「清密码」按钮、批量操作条「批量清空密码」、任务中心下拉选项均可下发
+- 安装包新增 `reset-password.bat`（双击运行的封装）与对应说明章节
+
+### 变更
+- **Sysprep 不再传 `/generalize`**：每次 `/generalize` 消耗一次 rearm（Windows 默认仅 3 次），重复执行到第 4 次必然失败。去掉后可无限次执行，代价是 SID 不复位（内部测试流转场景无影响）
+- 合并 `executeSysprep` / `executeSysprepReboot` 为 `runSysprep(reboot, unattendPath)`
+- 前端按钮文案改为「批量 Sysprep 关机（进OOBE）」「批量 Sysprep 重启（进OOBE）」，帮助页命令说明同步更正为 `/oobe /shutdown` 与 `/oobe /reboot`
+- 移除无人调用的 `xmlEscape`
+
+### 说明
+- 已被旧版改坏密码的机器：用 `ChangeMe@2024` 登录后运行 `reset-password.bat`，或从管理端下发「清密码」任务，无需重置系统
+
+## v1.4.7 (2026-11-12)
+
+### 变更
+- **数据目录与代码目录分离**：`server/config.py` 新增 `DATA_DIR`（由 `LANAGENT_DATA_DIR` 环境变量指定，默认回落代码目录）。数据库与上传目录改由 `DATA_DIR` 承载，更新代码时不再覆盖已有数据
+- 版本号升至 1.4.7
+
+### 改进
+- **升级脚本状态轮询**：`agent/upgrade.go` 新增 `waitServiceState`，以 `sc query` 轮询服务状态直到匹配，超时即判定失败并写入日志，替代原先的固定等待
+
 ## v1.4.5 (2026-10-07)
 
 ### 修复

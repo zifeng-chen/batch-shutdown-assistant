@@ -37,8 +37,9 @@
           <div class="batch-bar__actions">
             <el-button size="small" type="success" @click="batchHostMsg">批量弹窗</el-button>
             <el-button size="small" type="info" @click="batchSysinfo">采集设备信息</el-button>
-            <el-button size="small" type="primary" @click="batchTask('sysprep')">批量 Sysprep 关机</el-button>
-            <el-button size="small" type="warning" @click="batchTask('sysprep_reboot')">批量 Sysprep 重启</el-button>
+            <el-button size="small" type="primary" @click="batchTask('sysprep')">批量 Sysprep 关机（进OOBE）</el-button>
+            <el-button size="small" type="warning" @click="batchTask('sysprep_reboot')">批量 Sysprep 重启（进OOBE）</el-button>
+            <el-button size="small" type="info" @click="batchTask('reset_pwd')">批量清空密码</el-button>
             <el-button size="small" type="danger" @click="batchDelete">批量删除</el-button>
             <el-button size="small" text @click="clearSelection">取消选择</el-button>
           </div>
@@ -89,13 +90,14 @@
               <span class="muted">{{ formatTime(row.last_heartbeat) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="280" fixed="right">
+          <el-table-column label="操作" width="340" fixed="right">
             <template #default="{ row }">
               <div class="row-actions">
                 <el-button size="small" type="info" link @click="showDetail(row)">详情</el-button>
                 <el-button size="small" type="success" link @click="showHostMsg(row)">弹窗</el-button>
                 <el-button size="small" type="primary" link @click="quickTask(row, 'sysprep')">关机</el-button>
                 <el-button size="small" type="warning" link @click="quickTask(row, 'sysprep_reboot')">重启</el-button>
+                <el-button size="small" type="info" link @click="quickTask(row, 'reset_pwd')">清密码</el-button>
                 <el-button size="small" type="danger" link @click="deleteDevice(row)">删除</el-button>
               </div>
             </template>
@@ -577,7 +579,7 @@ const deleteDevice = async (row) => {
 }
 
 const quickTask = async (row, type) => {
-  const labels = { sysprep: 'Sysprep关机', sysprep_reboot: 'Sysprep重启' }
+  const labels = { sysprep: 'Sysprep关机', sysprep_reboot: 'Sysprep重启', reset_pwd: '清空账户密码' }
   await ElMessageBox.confirm(`确认对 ${row.hostname || row.ip} 执行${labels[type]}？`, '确认操作', { type: 'warning' })
   await taskApi.create({ task_type: type, device_ids: [row.id] })
   ElMessage.success('任务已下发')
@@ -677,7 +679,7 @@ const batchSysinfo = async () => {
 }
 
 const batchTask = async (type) => {
-  const labels = { sysprep: 'Sysprep关机', sysprep_reboot: 'Sysprep重启' }
+  const labels = { sysprep: 'Sysprep关机', sysprep_reboot: 'Sysprep重启', reset_pwd: '清空账户密码' }
   const count = selectedIds.value.length
   await ElMessageBox.confirm(
     `确认对选中的 ${count} 台设备执行【${labels[type]}】？\n\n此操作不可撤销，请谨慎确认。`,
@@ -757,7 +759,7 @@ const openUpgrade = async () => {
     const res = await upgradeApi.latest()
     upgradeVersion.value = res.data.version
   } catch (e) {
-    upgradeVersion.value = '1.4.5'
+    upgradeVersion.value = '1.4.7'
   }
   showUpgrade.value = true
 }

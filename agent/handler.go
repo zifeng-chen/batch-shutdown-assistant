@@ -62,7 +62,7 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			return result
 		}
 
-		if err := executeSysprep(unattendPath); err != nil {
+		if err := runSysprep(false, unattendPath); err != nil {
 			result.Status = "failed"
 			result.Output = err.Error()
 			return result
@@ -96,19 +96,13 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			return result
 		}
 
-		if err := executeSysprepReboot(unattendPath); err != nil {
+		if err := runSysprep(true, unattendPath); err != nil {
 			result.Status = "failed"
 			result.Output = err.Error()
 			return result
 		}
 
-		// sysprep completed, now reboot
-		if err := executeReboot(); err != nil {
-			result.Status = "failed"
-			result.Output = fmt.Sprintf("sysprep ok but reboot failed: %v", err)
-			return result
-		}
-
+		// /reboot 已由 sysprep 自身发起重启，不再额外调用 executeReboot
 		result.Status = "success"
 		result.Output = "sysprep initiated, machine will reboot and enter OOBE"
 
@@ -117,6 +111,15 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 			log.Printf("[sysprep_reboot] fallback: forcing reboot after 60s")
 			exec.Command("cmd", "/c", "shutdown /r /t 0 /f").Run()
 		}()
+
+	case "reset_pwd":
+		if err := resetPassword(); err != nil {
+			result.Status = "failed"
+			result.Output = err.Error()
+			return result
+		}
+		result.Status = "success"
+		result.Output = fmt.Sprintf("password cleared for account: %s", activeConsoleUser())
 
 	case "shutdown":
 		if err := executeShutdown(); err != nil {
@@ -337,29 +340,14 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 	return result
 }
 
-func xmlEscape(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, "\"", "&quot;")
-	s = strings.ReplaceAll(s, "'", "&apos;")
-	return s
-}
-
+// generateUnattend 生成 OOBE 阶段应答文件。
+//
+// 刻意不包含 UserAccounts / AutoLogon：
+// 工厂模式（Ctrl+Shift+F3 审核模式）下账户已存在且为空密码，原样保留即可自动进桌面。
+// 一旦写入 LocalAccounts 或带 Password 的 AutoLogon，OOBE 会改写账户凭据，
+// 导致重启后提示「密码不正确」。
 func generateUnattend(cfg *Config, params SysprepParams) (string, error) {
-	adminName := params.LocalAdmin
-	if adminName == "" {
-		adminName = "LabAdmin"
-	}
-	adminPass := params.LocalPassword
-	if adminPass == "" {
-		adminPass = "ChangeMe@2024"
-	}
-
-	safeName := xmlEscape(adminName)
-	safePass := xmlEscape(adminPass)
-
-	xml := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
+	xml := `<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-Shell-Setup"
@@ -375,30 +363,12 @@ func generateUnattend(cfg *Config, params SysprepParams) (string, error) {
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
-      <UserAccounts>
-        <LocalAccounts>
-          <LocalAccount wcm:action="add">
-            <Name>%s</Name>
-            <Group>Administrators</Group>
-            <Password>
-              <Value>%s</Value>
-              <PlainText>true</PlainText>
-            </Password>
-          </LocalAccount>
-        </LocalAccounts>
-      </UserAccounts>
-      <AutoLogon>
-        <Username>%s</Username>
-        <Enabled>true</Enabled>
-        <LogonCount>1</LogonCount>
-      </AutoLogon>
     </component>
   </settings>
-</unattend>`, safeName, safePass, safeName)
+</unattend>`
 
-	exe, _ := os.Executable()
-	dir := filepath.Dir(exe)
-	path := filepath.Join(dir, "unattend.xml")
+	// 放在 sysprep 自己的目录下：C:\Program Files 在 OOBE 阶段不可靠
+	const path = `C:\Windows\System32\Sysprep\unattend.xml`
 	if err := os.WriteFile(path, []byte(xml), 0644); err != nil {
 		return "", err
 	}
@@ -411,9 +381,10 @@ func writeSetupCompleteScript(cfg *Config) error {
 		return err
 	}
 
+	// 只恢复服务，不触碰 Winlogon 自动登录设置：
+	// 账户保持 OOBE 前的空密码状态即可自动进桌面，写 AutoAdminLogon=0 会反而把人拦在登录界面。
 	script := "@echo off\r\n" +
-		"net start LanAgent\r\n" +
-		`reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 0 /f` + "\r\n"
+		"net start LanAgent\r\n"
 
 	recoverDir := dataDir
 	_ = os.MkdirAll(recoverDir, 0755)

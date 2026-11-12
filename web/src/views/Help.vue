@@ -43,10 +43,10 @@
           <template #header><h3 style="margin: 0">远程操作</h3></template>
           <el-descriptions :column="1" border size="small">
             <el-descriptions-item label="Sysprep 关机">
-              执行 <code>sysprep /oobe /shutdown</code>，设备进入 OOBE 体验后关机。<b>不消耗 Rearm 次数</b>
+              执行 <code>sysprep /oobe /shutdown</code>，设备关机，下次开进入 OOBE。<b>不消耗 Rearm 次数</b>
             </el-descriptions-item>
             <el-descriptions-item label="Sysprep 重启">
-              执行 <code>sysprep /oobe /quit</code> 后重启，设备进入 OOBE 体验。<b>不消耗 Rearm 次数</b>
+              执行 <code>sysprep /oobe /reboot</code>，设备重启并进入 OOBE。<b>不消耗 Rearm 次数</b>
             </el-descriptions-item>
             <el-descriptions-item label="批量操作">
               勾选多台设备 → 点击批量按钮 → 确认执行

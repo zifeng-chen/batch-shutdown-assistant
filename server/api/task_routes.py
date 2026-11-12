@@ -139,6 +139,7 @@ def _task_description(task_type, params: dict) -> str:
         TaskType.SYSPREP_REBOOT: "Sysprep 重启",
         TaskType.HOSTMSG: "弹出信息提示",
         TaskType.SYSINFO: "采集设备信息",
+        TaskType.RESET_PWD: "清空账户密码",
     }.get(task_type) or (
         f"分发文件 {params.get('filename', '')}".strip()
         if task_type == TaskType.FILE_PUSH

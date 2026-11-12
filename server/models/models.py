@@ -25,6 +25,7 @@ class TaskType(str, enum.Enum):
     FILE_PUSH = "file_push"
     HOSTMSG = "hostmsg"     # 向目标机桌面弹出提示窗口
     SYSINFO = "sysinfo"     # 主动采集并回传硬件/系统信息
+    RESET_PWD = "reset_pwd"  # 清空当前登录账户密码（修复 Sysprep 后被改写的凭据）
 
 
 class TaskStatus(str, enum.Enum):

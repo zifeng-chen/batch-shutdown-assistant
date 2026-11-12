@@ -6,11 +6,11 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 from api.auth import get_current_user
-from config import BASE_DIR, APP_VERSION
+from config import BASE_DIR, DATA_DIR, APP_VERSION
 
 router = APIRouter(prefix="/api/upgrade", tags=["upgrade"])
 
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+UPLOAD_DIR = os.path.join(DATA_DIR, "uploads")
 
 # 单文件上传上限（500MB）
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
