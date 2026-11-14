@@ -1,6 +1,6 @@
 # 更新日志
 
-## v1.4.8 (2026-11-12)
+## v1.5.0 (2026-11-14)
 
 ### 修复
 - **Sysprep 后登录提示「密码不正确」**：根因是 `generateUnattend` 写入的应答文件同时包含 `LocalAccounts`（固定密码 `ChangeMe@2024`）与只填 `Username` 的 `AutoLogon`，OOBE 阶段会把工厂模式下本为空密码的账户改写成固定密码，而自动登录又按空密码校验，导致登录失败且只能重置系统
@@ -30,7 +30,7 @@
 - 合并 `executeSysprep` / `executeSysprepReboot` 为 `runSysprep(reboot, unattendPath)`
 - 前端按钮文案改为「批量 Sysprep 关机（进OOBE）」「批量 Sysprep 重启（进OOBE）」，帮助页命令说明同步更正为 `/oobe /shutdown` 与 `/oobe /reboot`
 - 移除无人调用的 `xmlEscape`
-- 版本号升至 1.4.8
+- 版本号升至 1.5.0
 
 ### 改进
 - **升级脚本状态轮询**：`agent/upgrade.go` 新增 `waitServiceState`，以 `sc query` 轮询服务状态直到匹配，超时即判定失败并写入日志，替代原先的固定等待

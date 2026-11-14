@@ -48,7 +48,7 @@ func getSysInfo(force bool) *SysInfo {
 }
 
 // buildVersion 由编译时 -ldflags "-X main.buildVersion=x.y.z" 注入，是版本号的唯一来源
-var buildVersion = "1.4.8"
+var buildVersion = "1.5.0"
 
 func getAgentVersion() string {
 	return buildVersion
