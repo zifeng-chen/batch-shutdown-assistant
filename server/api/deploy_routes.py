@@ -190,7 +190,7 @@ async def download_deploy_package(
         "    pause\r\n"
         "    exit /b 1\r\n"
         ")\r\n"
-        '"C:\\Program Files\\LanAgent\\LanAgent.exe" /uninstall\r\n'
+        '"C:\\Windows\\LanAgent\\LanAgent.exe" /uninstall\r\n'
         "echo Uninstall complete\r\n"
         "pause\r\n"
     )

@@ -11,11 +11,11 @@ import (
 
 func TestBuildUpgradeBat_AllPathsSubstituted(t *testing.T) {
 	bat := buildUpgradeBat(
-		`C:\Program Files\LanAgent\LanAgent.exe`,
-		`C:\Program Files\LanAgent\LanAgent.exe.old`,
+		`C:\Windows\LanAgent\LanAgent.exe`,
+		`C:\Windows\LanAgent\LanAgent.exe.old`,
 		`C:\Temp\LanAgent_new.exe`,
 		`C:\Temp\lanagent_upgrade.bat`,
-		`C:\Program Files\LanAgent\logs\upgrade.log`,
+		`C:\Windows\LanAgent\logs\upgrade.log`,
 	)
 
 	// 不应残留未替换的占位符（%date% 等 cmd 变量除外）
@@ -25,11 +25,11 @@ func TestBuildUpgradeBat_AllPathsSubstituted(t *testing.T) {
 
 	// 关键路径必须出现
 	for _, want := range []string{
-		`C:\Program Files\LanAgent\LanAgent.exe`,
-		`C:\Program Files\LanAgent\LanAgent.exe.old`,
+		`C:\Windows\LanAgent\LanAgent.exe`,
+		`C:\Windows\LanAgent\LanAgent.exe.old`,
 		`C:\Temp\LanAgent_new.exe`,
 		`C:\Temp\lanagent_upgrade.bat`,
-		`C:\Program Files\LanAgent\logs\upgrade.log`,
+		`C:\Windows\LanAgent\logs\upgrade.log`,
 	} {
 		if !strings.Contains(bat, want) {
 			t.Errorf("脚本缺少路径: %s", want)

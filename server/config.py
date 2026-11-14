@@ -15,6 +15,10 @@ TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
 MAX_CONCURRENT_TASKS = 10
 HEARTBEAT_TIMEOUT_SECONDS = 15
 
+# 离线自毁阈值（小时）。客户端连续无法连接管理端超过该时长后自行卸载。
+# 默认 0 = 关闭：管理端宕机或网络中断时不会误伤整网设备，需显式开启。
+OFFLINE_SELF_DESTRUCT_HOURS = int(os.environ.get("LANAGENT_OFFLINE_SELF_DESTRUCT_HOURS", "0"))
+
 BJT = timezone(timedelta(hours=8))
 
 

@@ -107,17 +107,24 @@ func sendHeartbeat(cfg *Config, status string) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		// 连不上管理端：开始/继续计时，供离线自毁判定使用
+		recordOfflineStart()
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
+		// 网络是通的，仅服务端异常（如升级重启），不计入离线时长
 		return fmt.Errorf("heartbeat failed: HTTP %d", resp.StatusCode)
 	}
 
+	// 连接成功即视为在线，清空离线计时
+	clearOfflineStart()
+
 	var result struct {
-		DeviceID string `json:"device_id"`
-		Status   string `json:"status"`
+		DeviceID     string `json:"device_id"`
+		Status       string `json:"status"`
+		OfflineHours int    `json:"offline_selfdestruct_hours"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
 		if result.DeviceID != "" && cfg.DeviceID != result.DeviceID {
@@ -125,16 +132,29 @@ func sendHeartbeat(cfg *Config, status string) error {
 			_ = SaveConfig(cfg)
 			log.Printf("[heartbeat] saved device_id=%s (status=%s)", result.DeviceID, result.Status)
 		}
+		// 阈值随心跳下发，允许管理端调整；0 表示关闭
+		if result.OfflineHours >= 0 {
+			offlineSelfDestructHours = result.OfflineHours
+		}
 	}
 
 	return nil
 }
+
+// offlineSelfDestructHours 是离线自毁阈值，由服务端心跳下发。
+// 0 表示不启用（默认），避免管理端故障或网络中断时误伤设备。
+var offlineSelfDestructHours int
 
 func startHeartbeat(cfg *Config, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	checkAndRecover(cfg)
+
+	// 启动时先检查：设备可能关机期间已超期
+	if checkSelfDestruct(offlineSelfDestructHours) {
+		return
+	}
 
 	if err := sendHeartbeat(cfg, "online"); err != nil {
 		log.Printf("[heartbeat] initial heartbeat failed: %v", err)
@@ -150,6 +170,10 @@ func startHeartbeat(cfg *Config, stopCh <-chan struct{}) {
 		case <-ticker.C:
 			if err := sendHeartbeat(cfg, "online"); err != nil {
 				log.Printf("[heartbeat] failed: %v", err)
+			}
+			// 每轮心跳后检查离线时长，超阈值则自行卸载
+			if checkSelfDestruct(offlineSelfDestructHours) {
+				return
 			}
 		}
 	}

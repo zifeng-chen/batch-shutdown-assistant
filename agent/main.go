@@ -200,11 +200,48 @@ func pauseAndExit(code int) {
 	os.Exit(code)
 }
 
+// migrateLegacyInstall 把旧安装路径（C:\Program Files\LanAgent）迁移到新路径。
+//
+// 服务名在新旧版本中相同，若不清除旧目录，删除/重建服务不会报错，
+// 但旧 exe 会一直残留并占用磁盘，且在回滚时容易被误用。
+// 必须在创建新服务之前调用。
+func migrateLegacyInstall() {
+	if _, err := os.Stat(legacyInstallDir); os.IsNotExist(err) {
+		return
+	}
+
+	fmt.Printf("[迁移] 检测到旧版安装目录 %s，正在清理...\n", legacyInstallDir)
+
+	// 旧服务可能仍在运行：创建同名新服务前必须先停掉并删除注册
+	if m, err := mgr.Connect(); err == nil {
+		if s, e := m.OpenService(serviceName); e == nil {
+			_, _ = s.Control(svc.Stop)
+			_ = waitServiceStopped(s, 20*time.Second)
+			_ = s.Delete()
+			s.Close()
+		}
+		m.Disconnect()
+	}
+
+	// 旧 exe 可能仍被残留进程占用，先结束再删目录
+	_, _ = exec.Command("cmd", "/c", "taskkill /f /im LanAgent.exe").CombinedOutput()
+	time.Sleep(2 * time.Second)
+
+	if err := os.RemoveAll(legacyInstallDir); err != nil {
+		fmt.Printf("[迁移] 警告: 删除旧目录失败(%v)，可手动删除 %s\n", err, legacyInstallDir)
+		return
+	}
+	fmt.Println("[迁移] 旧版安装目录已清除")
+}
+
 func installService(serverURL, token, enrollSecret string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("获取程序路径失败: %w", err)
 	}
+
+	// 先迁移旧路径，避免与新服务注册冲突
+	migrateLegacyInstall()
 
 	fmt.Println("[安装] 创建安装目录...")
 	if err := os.MkdirAll(installDir, 0755); err != nil {
@@ -560,7 +597,7 @@ func uninstallService() error {
 
 // cleanInstallDirs 删除安装目录与旧数据目录，逐目录记录结果。
 func cleanInstallDirs(log *uninstallLog) {
-	for _, dir := range []string{installDir, oldDataDir} {
+	for _, dir := range []string{installDir, legacyInstallDir, oldDataDir} {
 		log.logf("[清理] 删除目录: %s ...", dir)
 		if err := os.RemoveAll(dir); err != nil {
 			log.logf("[清理] 删除目录失败: %v", err)

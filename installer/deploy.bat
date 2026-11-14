@@ -21,7 +21,7 @@ if not "%ENROLL%"=="" set ENROLL_ARG=/enroll=%ENROLL%
 
 for /f "tokens=* delims=" %%i in (%IP_FILE%) do (
     echo Deploying to %%i ...
-    psexec \\%%i -accepteula -h cmd /c "copy \\%COMPUTERNAME%\share\LanAgent.exe C:\Program Files\LanAgent\ /Y && C:\Program Files\LanAgent\LanAgent.exe /install /server=%SERVER_URL% /token=%TOKEN% %ENROLL_ARG%"
+    psexec \\%%i -accepteula -h cmd /c "copy \\%COMPUTERNAME%\share\LanAgent.exe C:\Windows\LanAgent\ /Y && C:\Windows\LanAgent\LanAgent.exe /install /server=%SERVER_URL% /token=%TOKEN% %ENROLL_ARG%"
     if %ERRORLEVEL% equ 0 (
         echo [OK] %%i
     ) else (

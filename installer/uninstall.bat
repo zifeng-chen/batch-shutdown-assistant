@@ -21,7 +21,7 @@ if /i not "%CONFIRM%"=="Y" (
     exit /b 0
 )
 
-"C:\Program Files\LanAgent\LanAgent.exe" /uninstall
+"C:\Windows\LanAgent\LanAgent.exe" /uninstall
 if %ERRORLEVEL% neq 0 (
     echo [警告] 服务卸载可能未完全成功，请手动检查
 )

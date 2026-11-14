@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 title LAN Agent 一键覆盖安装
 
 set "SERVICE=LanAgent"
-set "INSTALL_DIR=C:\Program Files\LanAgent"
+set "INSTALL_DIR=C:\Windows\LanAgent"
 set "DEST_EXE=%INSTALL_DIR%\LanAgent.exe"
 
 echo ============================================

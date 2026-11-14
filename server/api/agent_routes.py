@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
 from database import get_db
-from config import ENROLL_SECRET, SECRET_KEY
+from config import ENROLL_SECRET, SECRET_KEY, OFFLINE_SELF_DESTRUCT_HOURS
 from models.models import Device, DeviceStatus
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,16 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 def _enroll_secret() -> str:
     """首次注册所需的预共享密钥，未显式配置时由 SECRET_KEY 派生"""
     return ENROLL_SECRET or f"enroll-{SECRET_KEY}"
+
+
+def _hb_response(device_id: str, status: str) -> dict:
+    """构造心跳响应。offline_selfdestruct_hours 随每次心跳下发，
+    客户端据此判断离线多久后自行卸载；0 表示不启用。"""
+    return {
+        "device_id": device_id,
+        "status": status,
+        "offline_selfdestruct_hours": OFFLINE_SELF_DESTRUCT_HOURS,
+    }
 
 
 class SysInfoPayload(BaseModel):
@@ -157,11 +167,11 @@ async def _handle_heartbeat(
             )
             _adopt_device(device, payload, agent_token)
             await db.commit()
-            return {"device_id": device.id, "status": "re-enrolled"}
+            return _hb_response(device.id, "re-enrolled")
 
         # 已软删除且无法验证身份 → 告知其仍处于删除态
         elif device.deleted_at is not None:
-            return {"device_id": device.id, "status": "deleted"}
+            return _hb_response(device.id, "deleted")
 
         else:
             logger.warning(
@@ -181,7 +191,7 @@ async def _handle_heartbeat(
             device.status = DeviceStatus.ONLINE
         _apply_sysinfo(device, payload.sysinfo)
         await db.commit()
-        return {"device_id": device.id, "status": "updated"}
+        return _hb_response(device.id, "updated")
 
     # 未知设备首次注册：需携带预共享 enroll secret，防止匿名伪造设备
     if not _enroll_secret_valid(request):
@@ -208,7 +218,7 @@ async def _handle_heartbeat(
     await db.commit()
 
     logger.info("Auto-registered new device: %s (%s / %s)", new_id, payload.hostname, payload.ip)
-    return {"device_id": new_id, "status": "created"}
+    return _hb_response(new_id, "created")
 
 
 @router.post("/recover")
