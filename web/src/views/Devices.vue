@@ -759,7 +759,7 @@ const openUpgrade = async () => {
     const res = await upgradeApi.latest()
     upgradeVersion.value = res.data.version
   } catch (e) {
-    upgradeVersion.value = '1.4.7'
+    upgradeVersion.value = '1.4.8'
   }
   showUpgrade.value = true
 }

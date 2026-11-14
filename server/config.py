@@ -6,7 +6,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("LANAGENT_DATA_DIR", BASE_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
 # 全局版本号唯一来源；可通过环境变量覆盖
-APP_VERSION = os.environ.get("LANAGENT_VERSION", "1.4.7")
+APP_VERSION = os.environ.get("LANAGENT_VERSION", "1.4.8")
 DATABASE_URL = f"sqlite+aiosqlite:///{os.path.join(DATA_DIR, 'lanagent.db')}"
 SECRET_KEY = os.environ.get("LANAGENT_SECRET", "change-me-in-production")
 # Agent 首次注册（enroll）所需的预共享密钥；未配置时按 SECRET_KEY 派生

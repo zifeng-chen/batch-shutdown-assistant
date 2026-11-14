@@ -1,6 +1,6 @@
 # 更新日志
 
-## v1.4.7 (2026-11-12)
+## v1.4.8 (2026-11-12)
 
 ### 修复
 - **Sysprep 后登录提示「密码不正确」**：根因是 `generateUnattend` 写入的应答文件同时包含 `LocalAccounts`（固定密码 `ChangeMe@2024`）与只填 `Username` 的 `AutoLogon`，OOBE 阶段会把工厂模式下本为空密码的账户改写成固定密码，而自动登录又按空密码校验，导致登录失败且只能重置系统
@@ -26,21 +26,17 @@
 
 ### 变更
 - **Sysprep 不再传 `/generalize`**：每次 `/generalize` 消耗一次 rearm（Windows 默认仅 3 次），重复执行到第 4 次必然失败。去掉后可无限次执行，代价是 SID 不复位（内部测试流转场景无影响）
+- **数据目录与代码目录分离**：`server/config.py` 新增 `DATA_DIR`（由 `LANAGENT_DATA_DIR` 环境变量指定，默认回落代码目录）。数据库与上传目录改由 `DATA_DIR` 承载，更新代码时不再覆盖已有数据
 - 合并 `executeSysprep` / `executeSysprepReboot` 为 `runSysprep(reboot, unattendPath)`
 - 前端按钮文案改为「批量 Sysprep 关机（进OOBE）」「批量 Sysprep 重启（进OOBE）」，帮助页命令说明同步更正为 `/oobe /shutdown` 与 `/oobe /reboot`
 - 移除无人调用的 `xmlEscape`
-
-### 说明
-- 已被旧版改坏密码的机器：用 `ChangeMe@2024` 登录后运行 `reset-password.bat`，或从管理端下发「清密码」任务，无需重置系统
-
-## v1.4.7 (2026-11-12)
-
-### 变更
-- **数据目录与代码目录分离**：`server/config.py` 新增 `DATA_DIR`（由 `LANAGENT_DATA_DIR` 环境变量指定，默认回落代码目录）。数据库与上传目录改由 `DATA_DIR` 承载，更新代码时不再覆盖已有数据
-- 版本号升至 1.4.7
+- 版本号升至 1.4.8
 
 ### 改进
 - **升级脚本状态轮询**：`agent/upgrade.go` 新增 `waitServiceState`，以 `sc query` 轮询服务状态直到匹配，超时即判定失败并写入日志，替代原先的固定等待
+
+### 说明
+- 已被旧版改坏密码的机器：用 `ChangeMe@2024` 登录后运行 `reset-password.bat`，或从管理端下发「清密码」任务，无需重置系统
 
 ## v1.4.5 (2026-10-07)
 
