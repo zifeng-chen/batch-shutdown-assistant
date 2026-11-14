@@ -172,11 +172,14 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 
 		markUpgradeRunning()
 		result.Status = "success"
-		result.Output = fmt.Sprintf("upgrade to %s staged, service will restart", params.Version)
+		result.Output = fmt.Sprintf("upgrade to %s staged, service will restart (结果见 %s)",
+			params.Version, upgradeLogPath())
 
-		// 升级脚本已独立启动，这里退出服务让脚本完成文件替换
+		// 升级脚本已独立启动。等待其完成"禁用恢复策略 + 停止服务"这一步再退出：
+		// bat 启动后需要几秒才会执行到 sc failure / sc stop，过早退出会让 SCM
+		// 在替换未完成时拉起旧版。30 秒足够覆盖下载校验与脚本初始化。
 		go func() {
-			time.Sleep(2 * time.Second)
+			time.Sleep(30 * time.Second)
 			os.Exit(0)
 		}()
 

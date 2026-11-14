@@ -9,6 +9,12 @@
 - **应答文件路径不可靠**：由 `C:\Program Files\LanAgent\unattend.xml` 改为 `C:\Windows\System32\Sysprep\unattend.xml`，前者在 OOBE 阶段不一定可访问
 - **Sysprep 失败仍上报成功**：原代码用 `/quiet` 使 `CombinedOutput()` 永远拿不到输出，执行失败也返回 `success`，管理端显示的是虚假成功。改为执行后校验 `sysprep_succeeded.tag` 标志文件，缺失即判定失败并提示查看 `setuperr.log`
 - **`sysprep_reboot` 重复重启**：`/reboot` 已由 sysprep 自身发起重启，移除额外的 `executeReboot()` 调用
+- **推送升级静默失效（版本不变）**：Agent 退出后 SCM 的 restart 恢复动作会在 5 秒内拉起服务，此时替换尚未完成，旧 exe 被重新占用，`move`/`copy` 失败后脚本静默回滚到旧版本，管理端却显示「upgrade staged」
+  - 升级脚本开头先执行 `sc failure ... actions= ""` 临时禁用自动恢复，`:done` 处再恢复，消除替换期间的竞态
+  - Agent 退出等待由 2 秒延长到 30 秒，确保脚本已完成停服务与文件替换
+  - `cleanupUpgradeArtifacts` 增加进程存活检查：脚本仍被 cmd 持有时跳过清理，避免删掉正在执行的 bat
+  - 任务回传信息附上升级日志路径，便于定位失败点
+  - 兜底：服务每次启动仍会经 `ensureServiceRecovery` 重建恢复策略，脚本异常中断也不会永久失去自愈能力
 
 ### 新增
 - **清空账户密码**：新增 `LanAgent.exe /resetpwd` 参数与 `agent/password.go`

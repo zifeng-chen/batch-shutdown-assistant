@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -147,6 +148,11 @@ setlocal enabledelayedexpansion
 set "LOG=%s"
 echo [%%date%% %%time%%] ===== upgrade started ===== >> "%%LOG%%"
 
+rem ---- 0. 临时禁用自动恢复 ----
+rem SCM 的 restart 动作会在 Agent 退出后 5 秒拉起服务，此时替换尚未完成，
+rem 旧 exe 被重新占用，导致 move/copy 失败并静默回滚到旧版本。
+sc failure LanAgent reset= 86400 actions= "" >> "%%LOG%%" 2>&1
+
 rem ---- 1. 停止服务，释放 exe 占用 ----
 sc stop LanAgent >> "%%LOG%%" 2>&1
 %s
@@ -190,6 +196,8 @@ goto :done
 echo [%%date%% %%time%%] no backup available, manual intervention required >> "%%LOG%%"
 
 :done
+rem ---- 恢复 SCM 自动恢复策略，保证服务异常退出后能自愈 ----
+sc failure LanAgent reset= 86400 actions= restart/5000/restart/10000/restart/30000 >> "%%LOG%%" 2>&1
 echo [%%date%% %%time%%] ===== upgrade finished ===== >> "%%LOG%%"
 del /f /q "%s" > nul 2>&1
 exit /b 0
@@ -274,6 +282,14 @@ func startUpgrade(cfg *Config, url, version string) error {
 func cleanupUpgradeArtifacts() {
 	tmpNew := filepath.Join(os.TempDir(), newExeName)
 	tmpBat := filepath.Join(os.TempDir(), upgradeBatName)
+
+	// 升级脚本可能因等待服务状态而长时间运行，仅凭文件时间无法判断是否仍在执行。
+	// 有 cmd 进程持有该脚本时一律跳过，否则删掉正在跑的 bat 会留下半完成状态。
+	if upgradeScriptRunning(tmpBat) {
+		log.Printf("[upgrade] upgrade script still running, skip cleanup")
+		return
+	}
+
 	cutoff := time.Now().Add(-5 * time.Minute)
 	for _, p := range []string{tmpNew, tmpBat} {
 		fi, err := os.Stat(p)
@@ -288,6 +304,22 @@ func cleanupUpgradeArtifacts() {
 			log.Printf("[upgrade] cleaned leftover %s", p)
 		}
 	}
+}
+
+// upgradeScriptRunning 判断指定的升级脚本是否仍被 cmd 进程持有。
+// 用 wmic 查询命令行中包含该脚本名的 cmd 进程：
+// 脚本被 cmd 打开执行时其路径会出现在命令行里，进程结束后即消失。
+func upgradeScriptRunning(batPath string) bool {
+	if _, err := os.Stat(batPath); err != nil {
+		return false
+	}
+	out, err := exec.Command("cmd", "/c",
+		`wmic process where "name='cmd.exe'" get commandline /value`).Output()
+	if err != nil {
+		// 查询失败时保守处理：认为它在运行，避免误删
+		return true
+	}
+	return strings.Contains(strings.ToLower(string(out)), strings.ToLower(upgradeBatName))
 }
 
 // upgradeInProgress 标记是否正在升级，避免重复触发
