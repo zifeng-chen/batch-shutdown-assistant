@@ -44,13 +44,13 @@ def _detect_lan_ip() -> str | None:
 
 def _resolve_server_url(request: Request) -> str:
     """返回设备应访问的服务器基地址；浏览器用 localhost 访问时替换为局域网 IP。"""
-    host = request.headers.get("host", "localhost:8080")
+    host = request.headers.get("host", "localhost:8900")
     hostname_part = host.split(":")[0]
     if hostname_part in ("localhost", "127.0.0.1"):
         local_ip = _detect_lan_ip()
         if not local_ip:
             raise HTTPException(status_code=500, detail="无法检测宿主机局域网IP，请用局域网IP访问管理端后重试")
-        port = host.split(":")[1] if ":" in host else "8080"
+        port = host.split(":")[1] if ":" in host else "8900"
         host = f"{local_ip}:{port}"
     return f"http://{host}"
 
@@ -190,7 +190,7 @@ async def download_deploy_package(
         "    pause\r\n"
         "    exit /b 1\r\n"
         ")\r\n"
-        '"C:\\Windows\\LanAgent\\LanAgent.exe" /uninstall\r\n'
+        '"C:\\Program Files\\LanAgent\\LanAgent.exe" /uninstall\r\n'
         "echo Uninstall complete\r\n"
         "pause\r\n"
     )

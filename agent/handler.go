@@ -141,9 +141,21 @@ func handleCommand(cfg *Config, cmd Command) CommandResult {
 
 	case "status":
 		rearm := getRearmCount()
+		// 用 json.Marshal 而不是手拼字符串：主机名可能含引号或反斜杠，
+		// 手拼会让服务端解析失败，看起来像设备无响应。
+		statusPayload, err := json.Marshal(map[string]interface{}{
+			"hostname":      getHostname(),
+			"ip":            getLocalIP(),
+			"rearm_count":   rearm,
+			"agent_version": getAgentVersion(),
+		})
+		if err != nil {
+			result.Status = "failed"
+			result.Output = fmt.Sprintf("marshal status failed: %v", err)
+			return result
+		}
 		result.Status = "success"
-		result.Output = fmt.Sprintf(`{"hostname":"%s","ip":"%s","rearm_count":%d,"agent_version":"%s"}`,
-			getHostname(), getLocalIP(), rearm, getAgentVersion())
+		result.Output = string(statusPayload)
 
 	case "upgrade":
 		var params struct {

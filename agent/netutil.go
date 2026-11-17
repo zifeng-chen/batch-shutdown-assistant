@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -49,13 +50,43 @@ func safeJoinUnder(baseDir, name string) (string, error) {
 	return final, nil
 }
 
+// ipPriority 给候选地址打分，数值越小越优先。
+// 多网卡机器（有线/无线/虚拟网卡/蓝牙）枚举顺序不稳定，
+// 必须优先选真正能代表本机局域网位置的地址。
+func ipPriority(ip net.IP) int {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return 99
+	}
+	// 回环、链路本地(169.254)、0.x 都不是可路由的业务地址
+	if ip4.IsLoopback() || ip4.IsLinkLocalUnicast() || ip4.IsUnspecified() {
+		return 90
+	}
+	// 常见虚拟网卡网段，优先级最低
+	if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
+		return 50
+	}
+	if ip4[0] == 10 {
+		return 20
+	}
+	if ip4[0] == 192 && ip4[1] == 168 {
+		return 10
+	}
+	return 30
+}
+
 func getInterfaceAddrs() ([]string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
 
-	var addrs []string
+	type candidate struct {
+		ip       string
+		priority int
+	}
+	var candidates []candidate
+	seen := map[string]bool{}
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
@@ -69,10 +100,25 @@ func getInterfaceAddrs() ([]string, error) {
 			if !ok {
 				continue
 			}
-			if ipNet.IP.To4() != nil && !ipNet.IP.IsLoopback() {
-				addrs = append(addrs, ipNet.IP.String())
+			if ipNet.IP.To4() == nil || ipNet.IP.IsLoopback() {
+				continue
 			}
+			text := ipNet.IP.String()
+			if seen[text] {
+				continue
+			}
+			seen[text] = true
+			candidates = append(candidates, candidate{ip: text, priority: ipPriority(ipNet.IP)})
 		}
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].priority < candidates[j].priority
+	})
+
+	addrs := make([]string, 0, len(candidates))
+	for _, item := range candidates {
+		addrs = append(addrs, item.ip)
 	}
 	return addrs, nil
 }

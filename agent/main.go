@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,8 +31,42 @@ type AgentService struct {
 	wg     sync.WaitGroup
 }
 
+// liveCfg 保存心跳线程回填后的最新配置。
+// 安装目录不可写时 config.json 落不了盘，runWebSocket 靠它拿到 device_id 与 token，
+// 否则会一直卡在 waiting for device_id，指令永远送不到设备。
+var (
+	liveCfgMu sync.RWMutex
+	liveCfg   *Config
+)
+
+func setLiveConfig(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	// 存副本：调用方之后仍可能修改自己的 cfg，共享同一指针会造成数据竞争
+	snapshot := *cfg
+	liveCfgMu.Lock()
+	liveCfg = &snapshot
+	liveCfgMu.Unlock()
+}
+
+// getLiveConfig 返回副本，避免调用方在无锁状态下改动共享对象。
+func getLiveConfig() *Config {
+	liveCfgMu.RLock()
+	defer liveCfgMu.RUnlock()
+	if liveCfg == nil {
+		return nil
+	}
+	snapshot := *liveCfg
+	return &snapshot
+}
+
 func (s *AgentService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	changes <- svc.Status{State: svc.StartPending}
+
+	// 服务模式下 stderr 会被丢弃，必须把日志落到文件，否则现场无法排查。
+	// 这一步要最先执行：后续任何失败都要有据可查。
+	initFileLog()
 
 	migrateOldData()
 
@@ -45,6 +80,7 @@ func (s *AgentService) Execute(args []string, r <-chan svc.ChangeRequest, change
 		return true, 1
 	}
 	s.cfg = cfg
+	setLiveConfig(cfg)
 
 	s.stopCh = make(chan struct{})
 	s.wg.Add(2)
@@ -79,11 +115,44 @@ func (s *AgentService) runHeartbeat() {
 	startHeartbeat(s.cfg, s.stopCh)
 }
 
+// agentHTTPClient 是 Agent 与管理端通信专用的 HTTP 客户端。
+//
+// 显式禁用代理：设备上可能存在 HTTP_PROXY/HTTPS_PROXY，
+// 会让心跳经由代理而 WebSocket 直连，两条通道行为不一致，
+// 表现为"设备在线但指令收不到"。统一走直连可避免这类排查困难。
+var agentHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:        10,
+		IdleConnTimeout:     60 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	},
+}
+
+// agentWebSocketDialer 返回专用于 Agent 长连接的拨号器。
+//
+// 设备上若配置了系统代理（HTTP_PROXY/HTTPS_PROXY），http.DefaultClient 会走代理，
+// 而 websocket.DefaultDialer 直连，两条通道行为不一致：
+// 现象就是心跳正常、但 WebSocket 一直被拦，指令永远收不到。
+// 这里显式禁用代理并设置超时，保证两条通道走同一条路径。
+func agentWebSocketDialer() *websocket.Dialer {
+	return &websocket.Dialer{
+		Proxy:            nil,
+		HandshakeTimeout: 15 * time.Second,
+		NetDialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+	}
+}
+
 func (s *AgentService) runWebSocket() {
 	defer s.wg.Done()
-
-	header := http.Header{}
-	header.Set("Authorization", "Bearer "+s.cfg.Token)
 
 	for {
 		select {
@@ -92,39 +161,65 @@ func (s *AgentService) runWebSocket() {
 		default:
 		}
 
-		// 每次重连都重新读取 device_id（心跳可能刚更新了它）
+		// 每次重连都重新读取配置：心跳可能刚回填 device_id，
+		// 也可能在 re-enroll 后轮换了 token。header 必须用最新 token 重建，
+		// 否则沿用启动时的旧 token 会让 WS 一直 401，指令永远收不到。
 		cfg, err := LoadConfig()
-		if err != nil || cfg.DeviceID == "" {
-			log.Printf("[ws] waiting for device_id from heartbeat...")
+		if err != nil {
+			// 配置文件暂时读不了时，退回心跳线程维护的内存副本
+			log.Printf("[ws] 读取配置失败: %v，改用内存副本", err)
+			cfg = getLiveConfig()
+		} else if cfg.DeviceID == "" {
+			// 安装目录不可写会让 device_id 落不了盘，此时用内存中的值补齐
+			if live := getLiveConfig(); live != nil && live.DeviceID != "" {
+				cfg.DeviceID = live.DeviceID
+				cfg.Token = live.Token
+			}
+		}
+		if cfg == nil || cfg.DeviceID == "" || cfg.Token == "" {
+			// 把实际状态打进日志：现场只看这一行就能判断卡在哪一环
+			serverURL, deviceID, hasToken := "", "", false
+			if cfg != nil {
+				serverURL, deviceID, hasToken = cfg.ServerURL, cfg.DeviceID, cfg.Token != ""
+			}
+			log.Printf("[ws] waiting for device_id from heartbeat... (server=%q device_id=%q token=%v)",
+				serverURL, deviceID, hasToken)
 			time.Sleep(3 * time.Second)
 			continue
 		}
 
+		header := http.Header{}
+		header.Set("Authorization", "Bearer "+cfg.Token)
+
 		wsURL := strings.Replace(cfg.ServerURL, "http", "ws", 1) + "/ws/agents/" + cfg.DeviceID + "?token=" + cfg.Token
 		log.Printf("[ws] connecting to %s", wsURL)
 
-		conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+		conn, _, err := agentWebSocketDialer().Dial(wsURL, header)
 		if err != nil {
-			log.Printf("[ws] connect failed: %v, retrying in 5s", err)
+			// 断线期间不再刷日志，只保留断开那一刻的记录
+			if !logIsOffline() {
+				logMarkDisconnected(err.Error())
+			}
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
 		log.Printf("[ws] connected")
-		s.handleConnection(conn)
+		logMarkConnected()
+		s.handleConnection(conn, cfg)
 		conn.Close()
 
 		select {
 		case <-s.stopCh:
 			return
 		default:
-			log.Printf("[ws] disconnected, reconnecting in 3s")
+			logMarkDisconnected("WebSocket 连接已断开")
 			time.Sleep(3 * time.Second)
 		}
 	}
 }
 
-func (s *AgentService) handleConnection(conn *websocket.Conn) {
+func (s *AgentService) handleConnection(conn *websocket.Conn, cfg *Config) {
 	done := make(chan struct{})
 
 	go func() {
@@ -142,9 +237,15 @@ func (s *AgentService) handleConnection(conn *websocket.Conn) {
 				continue
 			}
 
-			result := handleCommand(s.cfg, cmd)
+			result := handleCommand(cfg, cmd)
 
-			resp, _ := json.Marshal(result)
+			resp, err := json.Marshal(result)
+			if err != nil {
+				log.Printf("[ws] marshal result failed: %v", err)
+				continue
+			}
+			// 写超时防止对端不读时永久阻塞，把整个 WS 循环卡死
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteMessage(websocket.TextMessage, resp); err != nil {
 				log.Printf("[ws] write result failed: %v", err)
 				return
@@ -206,6 +307,9 @@ func pauseAndExit(code int) {
 // 但旧 exe 会一直残留并占用磁盘，且在回滚时容易被误用。
 // 必须在创建新服务之前调用。
 func migrateLegacyInstall() {
+	if legacyInstallDir == "" || legacyInstallDir == installDir {
+		return
+	}
 	if _, err := os.Stat(legacyInstallDir); os.IsNotExist(err) {
 		return
 	}
@@ -223,10 +327,29 @@ func migrateLegacyInstall() {
 		m.Disconnect()
 	}
 
-	// 旧 exe 可能仍被残留进程占用，先结束再删目录
-	_, _ = exec.Command("cmd", "/c", "taskkill /f /im LanAgent.exe").CombinedOutput()
+	// 旧 exe 可能仍被残留进程占用，先结束再删目录。
+	// 按完整路径匹配，避免误杀解压目录里正在运行的同名安装程序。
+	killAgentsUnder(legacyInstallDir)
 	time.Sleep(2 * time.Second)
 
+	// 先迁移旧目录里的 logs/data，避免换路径后历史日志和设备数据丢失
+	for _, name := range []string{"logs", "data"} {
+		src := filepath.Join(legacyInstallDir, name)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(installDir, name)
+		if _, err := os.Stat(dst); err == nil {
+			// 目标已存在时保持不动，避免覆盖当前正在使用的数据
+			continue
+		}
+		_ = os.MkdirAll(installDir, 0755)
+		if err := os.Rename(src, dst); err != nil {
+			fmt.Printf("[迁移] 警告: 迁移 %s 失败(%v)，旧目录中的该部分将保留\n", name, err)
+		}
+	}
+
+	// 旧目录里若还有程序文件则整体删除，Reserved 的 logs/data 已先行迁走
 	if err := os.RemoveAll(legacyInstallDir); err != nil {
 		fmt.Printf("[迁移] 警告: 删除旧目录失败(%v)，可手动删除 %s\n", err, legacyInstallDir)
 		return
@@ -377,6 +500,60 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0755)
+}
+
+// killAgentsUnder 只结束可执行文件位于指定目录下的 LanAgent 进程。
+// 不能用 taskkill /im LanAgent.exe：那是全局按映像名匹配，
+// 会连带杀掉解压目录里正在运行的同名安装程序，导致安装脚本中途被中断。
+func killAgentsUnder(dir string) {
+	if dir == "" {
+		return
+	}
+	// 分两步查：先取所有同名进程的 PID，再逐个确认可执行路径，
+	// 比解析 wmic 的 csv 输出更可靠（列顺序和编码在不同系统上不一致）。
+	out, err := exec.Command("cmd", "/c",
+		`tasklist /fi "imagename eq LanAgent.exe" /fo csv /nh`).Output()
+	if err != nil {
+		log.Printf("[kill] 查询进程失败: %v", err)
+		return
+	}
+	lowerDir := strings.ToLower(filepath.Clean(dir))
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(strings.ToLower(line), "信息") {
+			continue
+		}
+		fields := strings.Split(line, `","`)
+		if len(fields) < 2 {
+			continue
+		}
+		pid := strings.Trim(fields[1], `"`)
+		if pid == "" {
+			continue
+		}
+		pathOut, err := exec.Command("cmd", "/c",
+			fmt.Sprintf(`wmic process where "ProcessId=%s" get ExecutablePath /value`, pid)).Output()
+		if err != nil {
+			continue
+		}
+		exePath := ""
+		for _, pl := range strings.Split(string(pathOut), "\n") {
+			pl = strings.TrimSpace(pl)
+			if idx := strings.Index(strings.ToLower(pl), "executablepath="); idx >= 0 {
+				exePath = strings.TrimSpace(pl[idx+len("ExecutablePath="):])
+				break
+			}
+		}
+		if exePath == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(filepath.Clean(exePath)), lowerDir) {
+			continue
+		}
+		if _, err := exec.Command("taskkill", "/f", "/pid", pid).CombinedOutput(); err == nil {
+			log.Printf("[kill] 已结束占用 %s 的进程 pid=%s", dir, pid)
+		}
+	}
 }
 
 // waitServiceStopped 轮询服务状态直到 STOPPED。

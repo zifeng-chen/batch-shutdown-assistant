@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -48,7 +51,33 @@ func getSysInfo(force bool) *SysInfo {
 }
 
 // buildVersion 由编译时 -ldflags "-X main.buildVersion=x.y.z" 注入，是版本号的唯一来源
-var buildVersion = "1.5.0"
+var buildVersion = "1.7.6"
+
+// normalizeDeviceID 把服务端返回的 device_id 统一成字符串。
+//
+// 服务端返回的是数据库自增主键（JSON 数字），旧版服务端返回的是 UUID 字符串，
+// 两种都要能接住。用 interface{} 接收后在这里归一，避免类型不匹配导致
+// 整个响应解析失败——那会让 device_id 永远是空值，WebSocket 也就永远连不上。
+func normalizeDeviceID(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		// JSON 数字统一解析为 float64；主键是整数，去掉小数部分避免出现 26.000000
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10)
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case json.Number:
+		return v.String()
+	case bool:
+		return ""
+	default:
+		return ""
+	}
+}
 
 func getAgentVersion() string {
 	return buildVersion
@@ -63,13 +92,18 @@ func getHostname() string {
 }
 
 func getLocalIP() string {
-	// simplified: return first non-loopback IPv4
-	// in production, enumerate interfaces
+	// getInterfaceAddrs 已按业务优先级排序（192.168 > 10 > 172.16-31 > 其他），
+	// 取第一个即可，避免多网卡时误报虚拟网卡或链路本地地址。
 	addrs, err := getInterfaceAddrs()
 	if err != nil || len(addrs) == 0 {
-		return "127.0.0.1"
+		return ""
 	}
-	return addrs[0]
+	first := addrs[0]
+	// 全是无效地址（未联网/只有虚拟网卡）时返回空，由管理端保留上一次的有效 IP
+	if ip := net.ParseIP(first); ip == nil || ipPriority(ip) >= 90 {
+		return ""
+	}
+	return first
 }
 
 func sendHeartbeat(cfg *Config, status string) error {
@@ -105,10 +139,14 @@ func sendHeartbeat(cfg *Config, status string) error {
 		req.Header.Set("X-Enroll-Secret", cfg.EnrollSecret)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := agentHTTPClient.Do(req)
 	if err != nil {
 		// 连不上管理端：开始/继续计时，供离线自毁判定使用
 		recordOfflineStart()
+		// 此时 WebSocket 也连不上，直接进入静默，只留一条断开记录
+		if !logIsOffline() {
+			logMarkDisconnected(err.Error())
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -120,21 +158,55 @@ func sendHeartbeat(cfg *Config, status string) error {
 
 	// 连接成功即视为在线，清空离线计时
 	clearOfflineStart()
+	logMarkConnected()
 
-	var result struct {
-		DeviceID     string `json:"device_id"`
-		Status       string `json:"status"`
-		OfflineHours int    `json:"offline_selfdestruct_hours"`
+	// 服务端统一包一层信封：{code, data, msg}，device_id / token / commands 全在 data 里。
+	// 直接按顶层字段解析不会报错，只会静默拿到空值——历史上就是这么丢的 device_id。
+	var envelope struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+		Msg  string          `json:"msg"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
-		if result.DeviceID != "" && cfg.DeviceID != result.DeviceID {
-			cfg.DeviceID = result.DeviceID
-			_ = SaveConfig(cfg)
-			log.Printf("[heartbeat] saved device_id=%s (status=%s)", result.DeviceID, result.Status)
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		log.Printf("[heartbeat] 解析响应失败: %v", err)
+	} else {
+		var result struct {
+			// device_id 是数据库自增主键，JSON 里是数字，用泛型接收后再统一转字符串
+			DeviceID     interface{} `json:"device_id"`
+			Token        string      `json:"token"`
+			Action       string      `json:"action"`
+			OfflineHours *int        `json:"offline_selfdestruct_hours"`
 		}
-		// 阈值随心跳下发，允许管理端调整；0 表示关闭
-		if result.OfflineHours >= 0 {
-			offlineSelfDestructHours = result.OfflineHours
+		if len(envelope.Data) > 0 && string(envelope.Data) != "null" {
+			if err := json.Unmarshal(envelope.Data, &result); err != nil {
+				log.Printf("[heartbeat] 解析 data 失败: %v，原始片段: %.200s", err, envelope.Data)
+			}
+		}
+		// 服务端轮换/下发令牌时同步，否则重装后的设备会一直用旧令牌被拒
+		if result.Token != "" && cfg.Token != result.Token {
+			cfg.Token = result.Token
+			setLiveConfig(cfg)
+			if err := SaveConfig(cfg); err != nil {
+				log.Printf("[heartbeat] 保存 token 失败: %v（WebSocket 改用内存值继续）", err)
+			}
+		}
+		deviceID := normalizeDeviceID(result.DeviceID)
+		if deviceID != "" && cfg.DeviceID != deviceID {
+			cfg.DeviceID = deviceID
+			// 先同步到内存，保证 WebSocket 立即能拿到，不依赖磁盘写入是否成功
+			setLiveConfig(cfg)
+			// 写入失败必须显式记录：config.json 落在安装目录，
+			// 若该目录不可写，device_id 每次心跳后都会丢失，
+			// WebSocket 会一直卡在 waiting for device_id，指令永远收不到。
+			if err := SaveConfig(cfg); err != nil {
+				log.Printf("[heartbeat] 保存 device_id 失败: %v（WebSocket 改用内存值继续）", err)
+			} else {
+				log.Printf("[heartbeat] saved device_id=%s (action=%s code=%d)", deviceID, result.Action, envelope.Code)
+			}
+		}
+		// 阈值随心跳下发，允许管理端调整；0 表示关闭。缺省时不动现值。
+		if result.OfflineHours != nil && *result.OfflineHours >= 0 {
+			offlineSelfDestructHours = *result.OfflineHours
 		}
 	}
 
@@ -202,7 +274,7 @@ func checkAndRecover(cfg *Config) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.Token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := agentHTTPClient.Do(req)
 	if err != nil {
 		log.Printf("[recover] report failed: %v", err)
 		return

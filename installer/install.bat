@@ -27,7 +27,7 @@ if not exist "%INSTALL_DIR%LanAgent.exe" (
 )
 
 echo.
-echo 请输入管理端服务器地址（例如 http://192.168.1.100:8080）
+echo 请输入管理端服务器地址（例如 http://192.168.1.100:8900）
 set /p SERVER_URL=服务器地址: 
 
 echo.
@@ -57,7 +57,7 @@ if "%ENROLL%"=="" (
 echo.
 echo -------------------------------------------
 echo 即将安装 LAN Agent 服务：
-echo   安装路径: C:\Windows\LanAgent\
+echo   安装路径: C:\Program Files\LanAgent\
 echo   服务器:   %SERVER_URL%
 echo   Token:    %TOKEN%
 echo -------------------------------------------
@@ -70,11 +70,11 @@ if /i not "%CONFIRM%"=="Y" (
 )
 
 :: 创建安装目录
-mkdir "C:\Windows\LanAgent" >nul 2>&1
+mkdir "C:\Program Files\LanAgent" >nul 2>&1
 mkdir "C:\LanAgent" >nul 2>&1
 
 :: 复制文件
-copy /Y "%INSTALL_DIR%LanAgent.exe" "C:\Windows\LanAgent\LanAgent.exe" >nul
+copy /Y "%INSTALL_DIR%LanAgent.exe" "C:\Program Files\LanAgent\LanAgent.exe" >nul
 if %ERRORLEVEL% neq 0 (
     echo [错误] 复制文件失败
     pause
@@ -84,7 +84,7 @@ if %ERRORLEVEL% neq 0 (
 :: 安装并启动服务
 echo.
 echo 正在安装服务...
-"C:\Windows\LanAgent\LanAgent.exe" /install /server=%SERVER_URL% /token=%TOKEN% /enroll=%ENROLL%
+"C:\Program Files\LanAgent\LanAgent.exe" /install /server=%SERVER_URL% /token=%TOKEN% /enroll=%ENROLL%
 if %ERRORLEVEL% neq 0 (
     echo [错误] 服务安装失败
     pause
@@ -96,6 +96,6 @@ echo ============================================
 echo   安装成功！LAN Agent 服务已启动
 echo ============================================
 echo.
-echo 卸载命令: "C:\Windows\LanAgent\LanAgent.exe" /uninstall
+echo 卸载命令: "C:\Program Files\LanAgent\LanAgent.exe" /uninstall
 echo.
 pause

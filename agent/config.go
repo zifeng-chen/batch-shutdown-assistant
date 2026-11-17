@@ -9,13 +9,13 @@ import (
 
 const configFileName = "config.json"
 
-const installDir = `C:\Windows\LanAgent`
-const logsDir = `C:\Windows\LanAgent\logs`
-const dataDir = `C:\Windows\LanAgent\data`
-const filesDir = `C:\Windows\LanAgent\data\files`
+const installDir = `C:\Program Files\LanAgent`
+const logsDir = `C:\Program Files\LanAgent\logs`
+const dataDir = `C:\Program Files\LanAgent\data`
+const filesDir = `C:\Program Files\LanAgent\data\files`
 
-// legacyInstallDir 是 1.4.8 之前使用的安装路径，升级时需清理迁移。
-const legacyInstallDir = `C:\Program Files\LanAgent`
+// legacyInstallDir 是 1.4.9 及更早版本使用的旧安装路径，安装时需清理。
+const legacyInstallDir = `C:\Windows\LanAgent`
 
 // oldDataDir 是更早版本使用的数据目录。
 const oldDataDir = `C:\LanAgent`
